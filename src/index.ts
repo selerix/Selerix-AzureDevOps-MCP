@@ -255,6 +255,55 @@ async function main() {
       }
     );
     
+    allowedTools.has("listWorkItemAttachments") && server.tool("listWorkItemAttachments",
+      "List attachments linked to a work item (id, URL, file name, comment for each)",
+      {
+        id: z.number().describe("Work item ID")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.listWorkItemAttachments(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("uploadAttachment") && server.tool("uploadAttachment",
+      "Upload a file (e.g. a screenshot) to Azure DevOps and get back its attachment URL, for embedding inline via an <img> tag in a work item's rich-text fields (Description, Repro Steps) or in a comment. Does not link the file to any work item by itself — pair with updateWorkItem/addWorkItemComment to place the returned URL, or use addWorkItemAttachment to also create a formal attachment link.",
+      {
+        fileName: z.string().describe("File name including extension, e.g. screenshot.png"),
+        base64Content: z.string().describe("Base64-encoded file content")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.uploadAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("addWorkItemAttachment") && server.tool("addWorkItemAttachment",
+      "Upload a file and attach it to a work item as a formal linked attachment. Also returns the attachment URL, which can additionally be embedded inline (e.g. <img src=\"...\">) in a rich-text field via updateWorkItem or addWorkItemComment.",
+      {
+        id: z.number().describe("ID of the work item to attach the file to"),
+        fileName: z.string().describe("File name including extension, e.g. screenshot.png"),
+        base64Content: z.string().describe("Base64-encoded file content"),
+        comment: z.string().optional().describe("Comment describing the attachment link")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.addWorkItemAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     // Register Boards & Sprints Tools
     allowedTools.has("getBoards") && server.tool("getBoards", 
       "Get all boards for a team",

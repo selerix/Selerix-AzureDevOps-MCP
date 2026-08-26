@@ -128,6 +128,9 @@ Here's a list of all the tools mentioned in the README.md file:
 - `assignWorkItem`
 - `createLink`
 - `bulkCreateWorkItems`
+- `uploadAttachment`
+- `addWorkItemAttachment`
+- `listWorkItemAttachments`
 
 ### Boards & Sprints Tools
 - `getBoards`

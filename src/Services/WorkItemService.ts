@@ -1,9 +1,14 @@
 import * as azdev from 'azure-devops-node-api';
+import { Readable } from 'stream';
 import { WorkItemTrackingApi } from 'azure-devops-node-api/WorkItemTrackingApi';
-import { 
+import {
   JsonPatchOperation,
   Operation
 } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
+import {
+  AttachmentReference,
+  WorkItemExpand
+} from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
 import { AzureDevOpsConfig } from '../Interfaces/AzureDevOps';
 import { AzureDevOpsService } from './AzureDevOpsService';
 import {
@@ -17,7 +22,10 @@ import {
   UpdateWorkItemStateParams,
   AssignWorkItemParams,
   CreateLinkParams,
-  BulkWorkItemParams
+  BulkWorkItemParams,
+  UploadAttachmentParams,
+  AddWorkItemAttachmentParams,
+  WorkItemAttachmentInfo
 } from '../Interfaces/WorkItems';
 
 export class WorkItemService extends AzureDevOpsService {
@@ -390,6 +398,114 @@ export class WorkItemService extends AzureDevOpsService {
       return workItem;
     } catch (error) {
       console.error(`Error creating link between work items:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Upload a file to Azure DevOps as an attachment.
+   *
+   * Uses the same authenticated `azure-devops-node-api` connection as every other method on
+   * this service (PAT / NTLM / Basic / Entra, on-premises or cloud) instead of a hand-rolled
+   * HTTP call, so it works in exactly the situations where a standalone REST call with a raw
+   * PAT does not (e.g. AZURE_DEVOPS_AUTH_TYPE=entra, where there is no static PAT to reuse).
+   *
+   * Returns an AttachmentReference `{ id, url }` — the `url` is what callers embed inline in a
+   * rich-text field (e.g. `<img src="{url}">` in System.Description) via updateWorkItem/
+   * addWorkItemComment, or link as a formal attachment via addWorkItemAttachment below.
+   */
+  public async uploadAttachment(params: UploadAttachmentParams): Promise<AttachmentReference> {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+      const contentStream = Readable.from(Buffer.from(params.base64Content, 'base64'));
+
+      const attachment = await witApi.createAttachment(
+        undefined,
+        contentStream,
+        params.fileName,
+        undefined,
+        this.config.project
+      );
+
+      return attachment;
+    } catch (error) {
+      console.error(`Error uploading attachment ${params.fileName}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Upload a file and link it to a work item as a formal attachment (AttachedFile relation).
+   */
+  public async addWorkItemAttachment(params: AddWorkItemAttachmentParams): Promise<any> {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+      const attachment = await this.uploadAttachment(params);
+
+      const patchDocument: JsonPatchOperation[] = [
+        {
+          op: Operation.Add,
+          path: "/relations/-",
+          value: {
+            rel: "AttachedFile",
+            url: attachment.url,
+            attributes: {
+              comment: params.comment || ""
+            }
+          }
+        }
+      ];
+
+      const workItem = await witApi.updateWorkItem(
+        undefined,
+        patchDocument,
+        params.id,
+        this.config.project
+      );
+
+      return { attachment, workItem };
+    } catch (error) {
+      console.error(`Error attaching ${params.fileName} to work item ${params.id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * List attachments linked to a work item.
+   *
+   * Attachments aren't a separate ADO resource collection — they only surface as
+   * `AttachedFile` relations on the work item itself, which requires fetching the work item
+   * with relations expanded (not returned by default).
+   */
+  public async listWorkItemAttachments(params: WorkItemByIdParams): Promise<WorkItemAttachmentInfo[]> {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+      const workItem = await witApi.getWorkItem(
+        params.id,
+        undefined,
+        undefined,
+        WorkItemExpand.Relations,
+        this.config.project
+      );
+
+      const relations = workItem.relations || [];
+
+      return relations
+        .filter(relation => relation.rel === 'AttachedFile')
+        .map(relation => {
+          const url = relation.url || '';
+          const idMatch = url.match(/\/attachments\/([^/?]+)/i);
+
+          return {
+            id: idMatch ? idMatch[1] : undefined,
+            url,
+            name: relation.attributes?.name,
+            comment: relation.attributes?.comment,
+            resourceSize: relation.attributes?.resourceSize
+          };
+        });
+    } catch (error) {
+      console.error(`Error listing attachments for work item ${params.id}:`, error);
       throw error;
     }
   }

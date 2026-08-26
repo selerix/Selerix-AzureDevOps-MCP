@@ -91,4 +91,31 @@ export interface CreateLinkParams {
  */
 export interface BulkWorkItemParams {
   workItems: Array<CreateWorkItemParams | UpdateWorkItemParams>;
+}
+
+/**
+ * Interface for uploading a file to Azure DevOps as an attachment
+ */
+export interface UploadAttachmentParams {
+  fileName: string;
+  base64Content: string;
+}
+
+/**
+ * Interface for uploading a file and linking it to a work item
+ */
+export interface AddWorkItemAttachmentParams extends UploadAttachmentParams {
+  id: number;
+  comment?: string;
+}
+
+/**
+ * Interface for a single attachment linked to a work item
+ */
+export interface WorkItemAttachmentInfo {
+  id?: string;
+  url?: string;
+  name?: string;
+  comment?: string;
+  resourceSize?: number;
 } 
