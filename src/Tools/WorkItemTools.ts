@@ -12,7 +12,9 @@ import {
   UpdateWorkItemStateParams,
   AssignWorkItemParams,
   CreateLinkParams,
-  BulkWorkItemParams
+  BulkWorkItemParams,
+  UploadAttachmentParams,
+  AddWorkItemAttachmentParams
 } from '../Interfaces/WorkItems';
 import getClassMethods from "../utils/getClassMethods";
 
@@ -167,6 +169,19 @@ export class WorkItemTools {
   }
 
   /**
+   * List attachments linked to a work item
+   */
+  public async listWorkItemAttachments(params: WorkItemByIdParams): Promise<McpResponse> {
+    try {
+      const attachments = await this.workItemService.listWorkItemAttachments(params);
+      return formatMcpResponse(attachments, `Found ${attachments.length} attachment(s) on work item ${params.id}`);
+    } catch (error) {
+      console.error('Error in listWorkItemAttachments tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
    * Bulk create or update work items
    */
   public async bulkCreateWorkItems(params: BulkWorkItemParams): Promise<McpResponse> {
@@ -175,6 +190,33 @@ export class WorkItemTools {
       return formatMcpResponse(results, `Processed ${results.count} work items`);
     } catch (error) {
       console.error('Error in bulkCreateWorkItems tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Upload a file to Azure DevOps and get back its attachment URL, for embedding inline
+   * (e.g. `<img src="...">`) in a work item's rich-text fields or comments.
+   */
+  public async uploadAttachment(params: UploadAttachmentParams): Promise<McpResponse> {
+    try {
+      const attachment = await this.workItemService.uploadAttachment(params);
+      return formatMcpResponse(attachment, `Uploaded ${params.fileName || params.filePath}. Attachment URL: ${attachment.url}`);
+    } catch (error) {
+      console.error('Error in uploadAttachment tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Upload a file and link it to a work item as a formal attachment.
+   */
+  public async addWorkItemAttachment(params: AddWorkItemAttachmentParams): Promise<McpResponse> {
+    try {
+      const result = await this.workItemService.addWorkItemAttachment(params);
+      return formatMcpResponse(result, `Attached ${params.fileName || params.filePath} to work item ${params.id}. Attachment URL: ${result.attachment.url}`);
+    } catch (error) {
+      console.error('Error in addWorkItemAttachment tool:', error);
       return formatErrorResponse(error);
     }
   }
