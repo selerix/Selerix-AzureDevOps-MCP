@@ -1,5 +1,5 @@
 {
-  "name": "@ryancardin/azuredevops-mcp-server",
+  "name": "@selerix/azuredevops-mcp-server",
   "version": "1.1.0",
   "description": "MCP server for Azure DevOps integration - provides seamless access to work items, repositories, projects, boards, and sprints",
   "main": "dist/index.js",
@@ -38,12 +38,15 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/RyanCardin15/AzureDevOps-MCP.git"
+    "url": "https://github.com/selerix/Selerix-AzureDevOps-MCP.git"
   },
   "bugs": {
-    "url": "https://github.com/RyanCardin15/AzureDevOps-MCP/issues"
+    "url": "https://github.com/selerix/Selerix-AzureDevOps-MCP/issues"
   },
-  "homepage": "https://github.com/RyanCardin15/AzureDevOps-MCP#readme",
+  "homepage": "https://github.com/selerix/Selerix-AzureDevOps-MCP#readme",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "engines": {
     "node": ">=16.0.0"
   },
