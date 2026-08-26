@@ -417,7 +417,7 @@ export class WorkItemService extends AzureDevOpsService {
   public async uploadAttachment(params: UploadAttachmentParams): Promise<AttachmentReference> {
     try {
       const witApi = await this.getWorkItemTrackingApi();
-      const contentStream = Readable.from(Buffer.from(params.base64Content, 'base64'));
+      const contentStream = Readable.from([Buffer.from(params.base64Content, 'base64')]);
 
       const attachment = await witApi.createAttachment(
         undefined,
@@ -437,7 +437,7 @@ export class WorkItemService extends AzureDevOpsService {
   /**
    * Upload a file and link it to a work item as a formal attachment (AttachedFile relation).
    */
-  public async addWorkItemAttachment(params: AddWorkItemAttachmentParams): Promise<any> {
+  public async addWorkItemAttachment(params: AddWorkItemAttachmentParams): Promise<{ attachment: AttachmentReference; workItem: unknown }> {
     try {
       const witApi = await this.getWorkItemTrackingApi();
       const attachment = await this.uploadAttachment(params);
@@ -493,8 +493,8 @@ export class WorkItemService extends AzureDevOpsService {
       return relations
         .filter(relation => relation.rel === 'AttachedFile')
         .map(relation => {
-          const url = relation.url || '';
-          const idMatch = url.match(/\/attachments\/([^/?]+)/i);
+          const url = relation.url;
+          const idMatch = url ? url.match(/\/attachments\/([^/?]+)/i) : null;
 
           return {
             id: idMatch ? idMatch[1] : undefined,

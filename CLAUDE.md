@@ -24,7 +24,7 @@ npm run dev                # run directly from src/ via ts-node (src/index.ts)
 npm start                  # run the built server: node dist/index.js
 ```
 
-There is no test suite (`npm test` is a stub that exits 1) and no lint script.
+A Jest test suite is available (`npm test`), but there is no lint script.
 
 To run the server locally you need Azure DevOps env vars set (see `.env.cloud.example` /
 `.env.on-premises.example`, or export them directly) — `config.ts` throws at startup if
