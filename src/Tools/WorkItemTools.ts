@@ -201,7 +201,7 @@ export class WorkItemTools {
   public async uploadAttachment(params: UploadAttachmentParams): Promise<McpResponse> {
     try {
       const attachment = await this.workItemService.uploadAttachment(params);
-      return formatMcpResponse(attachment, `Uploaded ${params.fileName}. Attachment URL: ${attachment.url}`);
+      return formatMcpResponse(attachment, `Uploaded ${params.fileName || params.filePath}. Attachment URL: ${attachment.url}`);
     } catch (error) {
       console.error('Error in uploadAttachment tool:', error);
       return formatErrorResponse(error);
@@ -214,7 +214,7 @@ export class WorkItemTools {
   public async addWorkItemAttachment(params: AddWorkItemAttachmentParams): Promise<McpResponse> {
     try {
       const result = await this.workItemService.addWorkItemAttachment(params);
-      return formatMcpResponse(result, `Attached ${params.fileName} to work item ${params.id}. Attachment URL: ${result.attachment.url}`);
+      return formatMcpResponse(result, `Attached ${params.fileName || params.filePath} to work item ${params.id}. Attachment URL: ${result.attachment.url}`);
     } catch (error) {
       console.error('Error in addWorkItemAttachment tool:', error);
       return formatErrorResponse(error);

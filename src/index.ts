@@ -273,8 +273,9 @@ async function main() {
     allowedTools.has("uploadAttachment") && server.tool("uploadAttachment",
       "Upload a file (e.g. a screenshot) to Azure DevOps and get back its attachment URL, for embedding inline via an <img> tag in a work item's rich-text fields (Description, Repro Steps) or in a comment. Does not link the file to any work item by itself — pair with updateWorkItem/addWorkItemComment to place the returned URL, or use addWorkItemAttachment to also create a formal attachment link.",
       {
-        fileName: z.string().describe("File name including extension, e.g. screenshot.png"),
-        base64Content: z.string().describe("Base64-encoded file content")
+        filePath: z.string().optional().describe("Absolute path to the file on disk (same machine as this MCP server). Use this whenever the file already exists on disk, which includes every screenshot/recording/download case: the server streams it directly, so its bytes never pass through the caller's context. fileName defaults to this path's base name if omitted."),
+        base64Content: z.string().optional().describe("Base64-encoded file content. Do NOT use this to upload a file that already exists on disk — call it with filePath instead. Only for content with no backing file (e.g. generated purely in-memory), and rejected outright above 1 KB decoded since inlining anything larger requires generating it token-by-token as this argument, which is extremely slow and token-expensive. Requires fileName."),
+        fileName: z.string().optional().describe("File name including extension, e.g. screenshot.png. Required when using base64Content; optional (defaults to filePath's base name) when using filePath.")
       },
       async (params, extra) => {
         const result = await workItemTools.uploadAttachment(params);
@@ -290,8 +291,9 @@ async function main() {
       "Upload a file and attach it to a work item as a formal linked attachment. Also returns the attachment URL, which can additionally be embedded inline (e.g. <img src=\"...\">) in a rich-text field via updateWorkItem or addWorkItemComment.",
       {
         id: z.number().describe("ID of the work item to attach the file to"),
-        fileName: z.string().describe("File name including extension, e.g. screenshot.png"),
-        base64Content: z.string().describe("Base64-encoded file content"),
+        filePath: z.string().optional().describe("Absolute path to the file on disk (same machine as this MCP server). Use this whenever the file already exists on disk, which includes every screenshot/recording/download case: the server streams it directly, so its bytes never pass through the caller's context. fileName defaults to this path's base name if omitted."),
+        base64Content: z.string().optional().describe("Base64-encoded file content. Do NOT use this to upload a file that already exists on disk — call it with filePath instead. Only for content with no backing file (e.g. generated purely in-memory), and rejected outright above 1 KB decoded since inlining anything larger requires generating it token-by-token as this argument, which is extremely slow and token-expensive. Requires fileName."),
+        fileName: z.string().optional().describe("File name including extension, e.g. screenshot.png. Required when using base64Content; optional (defaults to filePath's base name) when using filePath."),
         comment: z.string().optional().describe("Comment describing the attachment link")
       },
       async (params, extra) => {

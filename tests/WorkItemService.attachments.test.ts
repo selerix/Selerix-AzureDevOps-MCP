@@ -2,6 +2,9 @@ import { WorkItemService } from '../src/Services/WorkItemService';
 import { AzureDevOpsConfig } from '../src/Interfaces/AzureDevOps';
 import { Operation } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
 import { WorkItemExpand } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -72,6 +75,109 @@ describe('WorkItemService attachment methods', () => {
       await expect(
         service.uploadAttachment({ fileName: 'shot.png', base64Content: 'aGVsbG8=' })
       ).rejects.toThrow('network blip');
+    });
+
+    describe('via filePath', () => {
+      let tempFilePath: string;
+      const originalBytes = Buffer.from('fake gif bytes read straight off disk');
+
+      beforeEach(() => {
+        tempFilePath = path.join(os.tmpdir(), `work-item-service-test-${process.hrtime.bigint()}.gif`);
+        fs.writeFileSync(tempFilePath, originalBytes);
+      });
+
+      afterEach(() => {
+        fs.rmSync(tempFilePath, { force: true });
+      });
+
+      it('streams the file directly from disk instead of requiring base64 content', async () => {
+        const attachmentRef = { id: 'abc-123', url: 'https://dev.azure.com/selerix/_apis/wit/attachments/abc-123' };
+        mockWitApi.createAttachment.mockResolvedValue(attachmentRef);
+
+        const result = await service.uploadAttachment({ filePath: tempFilePath });
+
+        expect(result).toBe(attachmentRef);
+        const [, contentStream, fileName] = mockWitApi.createAttachment.mock.calls[0];
+
+        // Default file name is derived from the path when none is given explicitly.
+        expect(fileName).toBe(path.basename(tempFilePath));
+
+        const streamedBytes = await streamToBuffer(contentStream);
+        expect(streamedBytes.equals(originalBytes)).toBe(true);
+      });
+
+      it('uses an explicit fileName over the one derived from the path when both are given', async () => {
+        mockWitApi.createAttachment.mockResolvedValue({ id: 'abc-123', url: 'https://example.test/abc-123' });
+
+        await service.uploadAttachment({ filePath: tempFilePath, fileName: 'renamed-shot.gif' });
+
+        const [, contentStream, fileName] = mockWitApi.createAttachment.mock.calls[0];
+        expect(fileName).toBe('renamed-shot.gif');
+
+        // The mock never consumes the real fs stream the way the actual API client would
+        // (by piping it into a request). Destroy it and wait for 'close' so its underlying
+        // file descriptor is fully settled before this test ends - otherwise the pending
+        // async open() can race the temp file's afterEach cleanup and throw an unhandled
+        // 'error' event well after this test has already reported as passing.
+        const stream = contentStream as fs.ReadStream;
+        await new Promise<void>((resolve) => {
+          stream.once('close', resolve);
+          stream.destroy();
+        });
+      });
+
+      it('rejects with a clear error when the file does not exist, instead of an unhandled stream error', async () => {
+        fs.rmSync(tempFilePath, { force: true });
+
+        await expect(service.uploadAttachment({ filePath: tempFilePath })).rejects.toThrow(
+          `File not found: ${tempFilePath}`
+        );
+        expect(mockWitApi.createAttachment).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('input validation', () => {
+      it('rejects when neither filePath nor base64Content is provided', async () => {
+        await expect(service.uploadAttachment({ fileName: 'shot.png' })).rejects.toThrow(
+          'Either filePath or base64Content must be provided.'
+        );
+        expect(mockWitApi.createAttachment).not.toHaveBeenCalled();
+      });
+
+      it('rejects when both filePath and base64Content are provided', async () => {
+        await expect(
+          service.uploadAttachment({ filePath: 'C:/some/file.png', base64Content: 'aGVsbG8=' })
+        ).rejects.toThrow('Provide either filePath or base64Content, not both.');
+        expect(mockWitApi.createAttachment).not.toHaveBeenCalled();
+      });
+
+      it('rejects base64Content without a fileName, since there is no path to derive one from', async () => {
+        await expect(service.uploadAttachment({ base64Content: 'aGVsbG8=' })).rejects.toThrow(
+          'fileName is required when uploading via base64Content.'
+        );
+        expect(mockWitApi.createAttachment).not.toHaveBeenCalled();
+      });
+
+      it('rejects base64Content over the 1KB decoded limit immediately, instead of accepting an expensive inline payload', async () => {
+        // 2KB decoded, comfortably over the 1KB limit.
+        const oversizedBase64 = Buffer.alloc(2048, 1).toString('base64');
+
+        await expect(
+          service.uploadAttachment({ fileName: 'too-big.bin', base64Content: oversizedBase64 })
+        ).rejects.toThrow(/base64Content is too large/);
+        expect(mockWitApi.createAttachment).not.toHaveBeenCalled();
+      });
+
+      it('accepts base64Content right at the boundary of the limit', async () => {
+        mockWitApi.createAttachment.mockResolvedValue({ id: 'x', url: 'https://example.test/x' });
+        // Exactly 1KB decoded, encoded to base64 (4/3 ratio, rounded to a multiple of 4 chars).
+        const boundaryBase64 = Buffer.alloc(1024, 1).toString('base64');
+
+        await expect(
+          service.uploadAttachment({ fileName: 'boundary.bin', base64Content: boundaryBase64 })
+        ).resolves.toBeDefined();
+        expect(mockWitApi.createAttachment).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

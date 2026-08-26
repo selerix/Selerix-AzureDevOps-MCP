@@ -56,6 +56,20 @@ describe('WorkItemTools attachment methods', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('401 Unauthorized');
     });
+
+    it('passes filePath straight through and falls back to it in the message when fileName is omitted', async () => {
+      serviceInstance.uploadAttachment.mockResolvedValue({
+        id: 'abc-123',
+        url: 'https://dev.azure.com/selerix/_apis/wit/attachments/abc-123'
+      });
+
+      const params = { filePath: 'C:\\Users\\me\\Downloads\\shot1.gif' };
+      const result = await tools.uploadAttachment(params);
+
+      expect(serviceInstance.uploadAttachment).toHaveBeenCalledWith(params);
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain('C:\\Users\\me\\Downloads\\shot1.gif');
+    });
   });
 
   describe('listWorkItemAttachments', () => {

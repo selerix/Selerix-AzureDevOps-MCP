@@ -94,11 +94,21 @@ export interface BulkWorkItemParams {
 }
 
 /**
- * Interface for uploading a file to Azure DevOps as an attachment
+ * Interface for uploading a file to Azure DevOps as an attachment.
+ *
+ * Provide exactly one content source:
+ * - `filePath`: preferred whenever the file already exists on disk on the same machine as this
+ *   MCP server. The server streams it directly — the bytes never have to pass through the
+ *   caller's context, unlike `base64Content`, which the caller has to read and then re-generate
+ *   verbatim as a tool argument (expensive in tokens, and can hit output-size limits on larger
+ *   files).
+ * - `base64Content`: only for content that doesn't exist as a file (e.g. generated in-memory).
+ *   Requires `fileName` since there's no path to derive it from.
  */
 export interface UploadAttachmentParams {
-  fileName: string;
-  base64Content: string;
+  fileName?: string;
+  base64Content?: string;
+  filePath?: string;
 }
 
 /**

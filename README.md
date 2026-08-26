@@ -29,7 +29,7 @@ The integration is organized into eight main tool categories:
 - Assign work items
 - Create links between work items
 - Bulk create/update work items
-- Upload a file as an attachment and get back its inline-embeddable URL
+- Upload a file (by path on disk, or base64 as a fallback) as an attachment and get back its inline-embeddable URL
 - Upload a file and attach it to a work item (linked attachment)
 - List attachments linked to a work item
 
