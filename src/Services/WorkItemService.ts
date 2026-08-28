@@ -417,7 +417,7 @@ export class WorkItemService extends AzureDevOpsService {
    * exactly one content source (filePath or base64Content) was provided.
    */
   private resolveAttachmentContent(params: UploadAttachmentParams): {
-    contentStream: NodeJS.ReadableStream;
+    contentStream: Readable;
     fileName: string;
   } {
     if (params.filePath && params.base64Content) {
@@ -425,10 +425,10 @@ export class WorkItemService extends AzureDevOpsService {
     }
 
     if (params.filePath) {
-      // fs.createReadStream doesn't throw synchronously for a missing file - it emits an
-      // async 'error' event instead, which (with nothing else consuming the stream yet)
-      // surfaces as an unhandled error and crashes the process rather than rejecting this
-      // call. Fail fast with a normal thrown error before a stream is ever created.
+      // fs.createReadStream doesn't throw synchronously for a missing/unreadable file, and
+      // existsSync is only a best-effort early check (TOCTOU, EISDIR, EACCES all still slip
+      // through) - the caller must also listen for a stream 'error' event rather than relying
+      // on this alone.
       if (!fs.existsSync(params.filePath)) {
         throw new Error(`File not found: ${params.filePath}`);
       }
@@ -481,21 +481,46 @@ export class WorkItemService extends AzureDevOpsService {
    * addWorkItemComment, or link as a formal attachment via addWorkItemAttachment below.
    */
   public async uploadAttachment(params: UploadAttachmentParams): Promise<AttachmentReference> {
+    let contentStream: Readable | undefined;
     try {
       const witApi = await this.getWorkItemTrackingApi();
-      const { contentStream, fileName } = this.resolveAttachmentContent(params);
 
-      const attachment = await witApi.createAttachment(
-        undefined,
-        contentStream,
-        fileName,
-        undefined,
-        this.config.project
-      );
+      // typed-rest-client's NTLM handler sends every request anonymously first, and on the
+      // resulting 401 challenge re-pipes the *same* (already-drained) stream into the
+      // follow-up request - it silently uploads an empty attachment instead of failing. There
+      // is no fix short of buffering the whole file and re-streaming per attempt, so refuse
+      // outright rather than risk a "successful" upload that isn't actually there.
+      if (this.config.auth?.type === 'ntlm') {
+        throw new Error(
+          'uploadAttachment is not supported with NTLM authentication: the NTLM handshake ' +
+          'resends the request after an initial 401 challenge using the same file stream, ' +
+          'which produces a silently empty attachment on Azure DevOps rather than an error.'
+        );
+      }
+
+      const resolved = this.resolveAttachmentContent(params);
+      contentStream = resolved.contentStream;
+      const fileName = resolved.fileName;
+
+      const streamError = new Promise<never>((_, reject) => {
+        contentStream!.once('error', reject);
+      });
+
+      const attachment = await Promise.race([
+        witApi.createAttachment(
+          undefined,
+          contentStream,
+          fileName,
+          undefined,
+          this.config.project
+        ),
+        streamError
+      ]);
 
       return attachment;
     } catch (error) {
       console.error(`Error uploading attachment ${params.fileName || params.filePath}:`, error);
+      contentStream?.destroy();
       throw error;
     }
   }

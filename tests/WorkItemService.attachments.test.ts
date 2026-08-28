@@ -134,6 +134,61 @@ describe('WorkItemService attachment methods', () => {
         );
         expect(mockWitApi.createAttachment).not.toHaveBeenCalled();
       });
+
+      it('rejects when the stream errors after existsSync passes (e.g. EISDIR, or deleted between the check and the read)', async () => {
+        // existsSync can't catch every failure mode - a path that is a directory still passes
+        // it, and createAttachment pipes the stream into a request where pipe() never forwards
+        // source 'error' events. Without a listener this would surface as an unhandled 'error'
+        // event and crash the process instead of rejecting the call. Use a real directory (not
+        // a mocked stream) so this exercises the actual async EISDIR Node emits on read.
+        const directoryPath = fs.mkdtempSync(path.join(os.tmpdir(), 'work-item-service-test-dir-'));
+        try {
+          // Mimics createAttachment piping the stream (which puts it in flowing mode, triggering
+          // the read that fails with EISDIR) and then hanging, since pipe() alone would never
+          // surface the source stream's error back to the caller.
+          mockWitApi.createAttachment.mockImplementation((_headers: unknown, contentStream: fs.ReadStream) => {
+            contentStream.resume();
+            return new Promise(() => {});
+          });
+
+          await expect(service.uploadAttachment({ filePath: directoryPath })).rejects.toThrow(/EISDIR/);
+        } finally {
+          fs.rmdirSync(directoryPath);
+        }
+      });
+
+      it('destroys the file stream when the upload fails, instead of leaking an open file descriptor', async () => {
+        mockWitApi.createAttachment.mockRejectedValue(new Error('network blip'));
+
+        await expect(service.uploadAttachment({ filePath: tempFilePath })).rejects.toThrow('network blip');
+
+        const [, contentStream] = mockWitApi.createAttachment.mock.calls[0];
+        expect((contentStream as fs.ReadStream).destroyed).toBe(true);
+      });
+    });
+
+    describe('with NTLM authentication', () => {
+      it('rejects immediately instead of silently uploading an empty attachment', async () => {
+        // typed-rest-client's NTLM handler answers the initial 401 challenge by re-piping the
+        // same (already-drained) stream into the follow-up request, which produces a
+        // successfully-reported but empty attachment. There's no fix short of buffering and
+        // re-streaming per attempt, so this path must fail loudly instead.
+        const ntlmConfig: AzureDevOpsConfig = {
+          orgUrl: 'https://tfs.example.com/collection',
+          project: 'Engineering',
+          personalAccessToken: 'unused',
+          isOnPremises: true,
+          auth: { type: 'ntlm', username: 'svc-account', password: 'hunter2', domain: 'CORP' }
+        };
+        const ntlmService = new WorkItemService(ntlmConfig);
+        const mockNtlmWitApi = { createAttachment: jest.fn() };
+        (ntlmService as any).getWorkItemTrackingApi = jest.fn().mockResolvedValue(mockNtlmWitApi);
+
+        await expect(
+          ntlmService.uploadAttachment({ fileName: 'shot.png', base64Content: 'aGVsbG8=' })
+        ).rejects.toThrow(/NTLM/);
+        expect(mockNtlmWitApi.createAttachment).not.toHaveBeenCalled();
+      });
     });
 
     describe('input validation', () => {
