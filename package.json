@@ -1,6 +1,6 @@
 {
   "name": "@selerix/azuredevops-mcp-server",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "MCP server for Azure DevOps integration - provides seamless access to work items, repositories, projects, boards, and sprints",
   "main": "dist/index.js",
   "bin": {
