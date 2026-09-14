@@ -9,6 +9,9 @@ import {
 } from 'azure-devops-node-api/interfaces/common/VSSInterfaces';
 import {
   AttachmentReference,
+  Comment,
+  CommentList,
+  CommentSortOrder,
   WorkItemExpand
 } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
 import { AzureDevOpsConfig } from '../Interfaces/AzureDevOps';
@@ -21,6 +24,9 @@ import {
   CreateWorkItemParams,
   UpdateWorkItemParams,
   AddWorkItemCommentParams,
+  GetWorkItemCommentsParams,
+  UpdateWorkItemCommentParams,
+  DeleteWorkItemCommentParams,
   UpdateWorkItemStateParams,
   AssignWorkItemParams,
   CreateLinkParams,
@@ -306,6 +312,67 @@ export class WorkItemService extends AzureDevOpsService {
       return comment;
     } catch (error) {
       console.error(`Error adding comment to work item ${params.id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get the comments (Discussion tab) on a work item
+   */
+  public async getWorkItemComments(params: GetWorkItemCommentsParams): Promise<CommentList> {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+
+      const order = params.order === 'desc' ? CommentSortOrder.Desc : CommentSortOrder.Asc;
+
+      const comments = await witApi.getComments(
+        this.config.project,
+        params.id,
+        params.top,
+        undefined,
+        false,
+        undefined,
+        order
+      );
+
+      return comments;
+    } catch (error) {
+      console.error(`Error getting comments for work item ${params.id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Edit the text of an existing comment on a work item
+   */
+  public async updateWorkItemComment(params: UpdateWorkItemCommentParams): Promise<Comment> {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+
+      const comment = await witApi.updateComment(
+        { text: params.text },
+        this.config.project,
+        params.id,
+        params.commentId
+      );
+
+      return comment;
+    } catch (error) {
+      console.error(`Error updating comment ${params.commentId} on work item ${params.id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a comment from a work item
+   */
+  public async deleteWorkItemComment(params: DeleteWorkItemCommentParams): Promise<void> {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+
+      await witApi.deleteComment(this.config.project, params.id, params.commentId);
+    } catch (error) {
+      console.error(`Error deleting comment ${params.commentId} on work item ${params.id}:`, error);
       throw error;
     }
   }
