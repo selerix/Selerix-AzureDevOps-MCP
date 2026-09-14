@@ -179,7 +179,8 @@ async function main() {
       {
         id: z.number().describe("ID of the work item"),
         top: z.number().optional().describe("Maximum number of comments to return"),
-        order: z.enum(["asc", "desc"]).optional().describe("Sort order for comments by creation date (default: asc)")
+        order: z.enum(["asc", "desc"]).optional().describe("Sort order for comments by creation date (default: asc)"),
+        continuationToken: z.string().optional().describe("Continuation token from a previous call's response, used to fetch the next page of comments")
       },
       async (params, extra) => {
         const result = await workItemTools.getWorkItemComments(params);

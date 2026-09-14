@@ -66,6 +66,7 @@ export interface GetWorkItemCommentsParams {
   id: number;
   top?: number;
   order?: 'asc' | 'desc';
+  continuationToken?: string;
 }
 
 /**

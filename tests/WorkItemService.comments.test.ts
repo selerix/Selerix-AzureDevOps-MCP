@@ -84,6 +84,22 @@ describe('WorkItemService comment methods', () => {
       );
     });
 
+    it('passes a continuation token through to fetch a subsequent page', async () => {
+      mockWitApi.getComments.mockResolvedValue({ comments: [] });
+
+      await service.getWorkItemComments({ id: 42, continuationToken: 'page-2-token' });
+
+      expect(mockWitApi.getComments).toHaveBeenCalledWith(
+        'Engineering',
+        42,
+        undefined,
+        'page-2-token',
+        false,
+        undefined,
+        CommentSortOrder.Asc
+      );
+    });
+
     it('propagates errors from the Azure DevOps API', async () => {
       mockWitApi.getComments.mockRejectedValue(new Error('work item not found'));
 

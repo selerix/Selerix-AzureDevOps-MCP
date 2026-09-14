@@ -329,7 +329,7 @@ export class WorkItemService extends AzureDevOpsService {
         this.config.project,
         params.id,
         params.top,
-        undefined,
+        params.continuationToken,
         false,
         undefined,
         order
