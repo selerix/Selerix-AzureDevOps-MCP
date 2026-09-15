@@ -7,6 +7,23 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-15
+
+Rounds out comment support for work items: the Discussion tab was previously write-only.
+
+### Added
+
+- **`getWorkItemComments`** — read the comments on a work item's Discussion tab, with `top` and
+  `order` (ascending/descending by creation date) options, and pagination via `continuationToken`
+  for work items with more than one page of comments.
+- **`updateWorkItemComment`** — edit the text of an existing comment.
+- **`deleteWorkItemComment`** — delete a comment from a work item.
+
+All three route through the same `azure-devops-node-api` `WorkItemTrackingApi` connection every
+other tool in this project uses (`getComments` / `updateComment` / `deleteComment`), which were
+already available in the client but not previously wired up alongside the existing
+`addWorkItemComment`.
+
 ## [1.1.1] - 2026-08-28
 
 ### Fixed
@@ -64,6 +81,7 @@ project uses — rather than requiring a separate, hand-rolled REST call.
 - The base64 decoded-size estimate now accounts for `=` padding, so a payload sitting exactly at
   the 1 KB boundary isn't incorrectly rejected.
 
-[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/releases/tag/v1.1.0
