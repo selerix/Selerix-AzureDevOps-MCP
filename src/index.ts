@@ -174,7 +174,58 @@ async function main() {
       }
     );
     
-    allowedTools.has("updateWorkItemState") && server.tool("updateWorkItemState", 
+    allowedTools.has("getWorkItemComments") && server.tool("getWorkItemComments",
+      "Read the comments (Discussion tab) on a work item",
+      {
+        id: z.number().describe("ID of the work item"),
+        top: z.number().optional().describe("Maximum number of comments to return"),
+        order: z.enum(["asc", "desc"]).optional().describe("Sort order for comments by creation date (default: asc)"),
+        continuationToken: z.string().optional().describe("Continuation token from a previous call's response, used to fetch the next page of comments")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.getWorkItemComments(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("updateWorkItemComment") && server.tool("updateWorkItemComment",
+      "Edit the text of an existing comment on a work item",
+      {
+        id: z.number().describe("ID of the work item"),
+        commentId: z.number().describe("ID of the comment to update"),
+        text: z.string().describe("New comment text")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.updateWorkItemComment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("deleteWorkItemComment") && server.tool("deleteWorkItemComment",
+      "Delete a comment from a work item",
+      {
+        id: z.number().describe("ID of the work item"),
+        commentId: z.number().describe("ID of the comment to delete")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.deleteWorkItemComment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("updateWorkItemState") && server.tool("updateWorkItemState",
       "Update the state of a work item",
       {
         id: z.number().describe("ID of the work item"),

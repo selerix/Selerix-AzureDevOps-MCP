@@ -124,6 +124,9 @@ Here's a list of all the tools mentioned in the README.md file:
 - `createWorkItem`
 - `updateWorkItem`
 - `addWorkItemComment`
+- `getWorkItemComments`
+- `updateWorkItemComment`
+- `deleteWorkItemComment`
 - `updateWorkItemState`
 - `assignWorkItem`
 - `createLink`

@@ -9,6 +9,9 @@ import {
   CreateWorkItemParams,
   UpdateWorkItemParams,
   AddWorkItemCommentParams,
+  GetWorkItemCommentsParams,
+  UpdateWorkItemCommentParams,
+  DeleteWorkItemCommentParams,
   UpdateWorkItemStateParams,
   AssignWorkItemParams,
   CreateLinkParams,
@@ -125,6 +128,46 @@ export class WorkItemTools {
       return formatMcpResponse(comment, `Comment added to work item: ${params.id}`);
     } catch (error) {
       console.error('Error in addWorkItemComment tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Get the comments (Discussion tab) on a work item
+   */
+  public async getWorkItemComments(params: GetWorkItemCommentsParams): Promise<McpResponse> {
+    try {
+      const result = await this.workItemService.getWorkItemComments(params);
+      const count = result.comments?.length ?? 0;
+      return formatMcpResponse(result, `Found ${count} comment(s) on work item ${params.id}`);
+    } catch (error) {
+      console.error('Error in getWorkItemComments tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Edit the text of an existing comment on a work item
+   */
+  public async updateWorkItemComment(params: UpdateWorkItemCommentParams): Promise<McpResponse> {
+    try {
+      const comment = await this.workItemService.updateWorkItemComment(params);
+      return formatMcpResponse(comment, `Updated comment ${params.commentId} on work item ${params.id}`);
+    } catch (error) {
+      console.error('Error in updateWorkItemComment tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Delete a comment from a work item
+   */
+  public async deleteWorkItemComment(params: DeleteWorkItemCommentParams): Promise<McpResponse> {
+    try {
+      await this.workItemService.deleteWorkItemComment(params);
+      return formatMcpResponse({ id: params.id, commentId: params.commentId }, `Deleted comment ${params.commentId} from work item ${params.id}`);
+    } catch (error) {
+      console.error('Error in deleteWorkItemComment tool:', error);
       return formatErrorResponse(error);
     }
   }

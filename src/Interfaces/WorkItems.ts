@@ -60,6 +60,33 @@ export interface AddWorkItemCommentParams {
 }
 
 /**
+ * Interface for reading the comments (Discussion tab) on a work item
+ */
+export interface GetWorkItemCommentsParams {
+  id: number;
+  top?: number;
+  order?: 'asc' | 'desc';
+  continuationToken?: string;
+}
+
+/**
+ * Interface for editing an existing comment on a work item
+ */
+export interface UpdateWorkItemCommentParams {
+  id: number;
+  commentId: number;
+  text: string;
+}
+
+/**
+ * Interface for deleting a comment on a work item
+ */
+export interface DeleteWorkItemCommentParams {
+  id: number;
+  commentId: number;
+}
+
+/**
  * Interface for updating a work item state
  */
 export interface UpdateWorkItemStateParams {
