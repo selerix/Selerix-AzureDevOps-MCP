@@ -1,0 +1,240 @@
+import { TestPlansService } from '../src/Services/TestPlansService';
+import { AzureDevOpsConfig } from '../src/Interfaces/AzureDevOps';
+import { TestSuiteType, SuiteExpand } from 'azure-devops-node-api/interfaces/TestPlanInterfaces';
+
+const testConfig: AzureDevOpsConfig = {
+  orgUrl: 'https://dev.azure.com/selerix',
+  project: 'Engineering',
+  personalAccessToken: 'fake-pat',
+  isOnPremises: false,
+  auth: { type: 'pat' }
+};
+
+describe('TestPlansService', () => {
+  let service: TestPlansService;
+  let mockTestPlanApi: {
+    createTestPlan: jest.Mock;
+    getTestPlans: jest.Mock;
+    getTestPlanById: jest.Mock;
+    updateTestPlan: jest.Mock;
+    deleteTestPlan: jest.Mock;
+    createTestSuite: jest.Mock;
+    getTestSuitesForPlan: jest.Mock;
+    getTestSuiteById: jest.Mock;
+    updateTestSuite: jest.Mock;
+    deleteTestSuite: jest.Mock;
+    addTestCasesToSuite: jest.Mock;
+    getTestCaseList: jest.Mock;
+    getSuitesByTestCaseId: jest.Mock;
+    removeTestCasesFromSuite: jest.Mock;
+    deleteTestCase: jest.Mock;
+  };
+
+  beforeEach(() => {
+    service = new TestPlansService(testConfig);
+    mockTestPlanApi = {
+      createTestPlan: jest.fn(),
+      getTestPlans: jest.fn(),
+      getTestPlanById: jest.fn(),
+      updateTestPlan: jest.fn(),
+      deleteTestPlan: jest.fn(),
+      createTestSuite: jest.fn(),
+      getTestSuitesForPlan: jest.fn(),
+      getTestSuiteById: jest.fn(),
+      updateTestSuite: jest.fn(),
+      deleteTestSuite: jest.fn(),
+      addTestCasesToSuite: jest.fn(),
+      getTestCaseList: jest.fn(),
+      getSuitesByTestCaseId: jest.fn(),
+      removeTestCasesFromSuite: jest.fn(),
+      deleteTestCase: jest.fn()
+    };
+    (service as any).getTestPlanApi = jest.fn().mockResolvedValue(mockTestPlanApi);
+  });
+
+  describe('createTestPlan', () => {
+    it('creates a plan with the given fields', async () => {
+      const plan = { id: 1, name: 'Sprint 1 Plan' };
+      mockTestPlanApi.createTestPlan.mockResolvedValue(plan);
+
+      const result = await service.createTestPlan({ name: 'Sprint 1 Plan', iteration: 'Engineering\\Sprint 1' });
+
+      expect(result).toBe(plan);
+      expect(mockTestPlanApi.createTestPlan).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Sprint 1 Plan', iteration: 'Engineering\\Sprint 1' }),
+        'Engineering'
+      );
+    });
+  });
+
+  describe('getTestPlanById', () => {
+    it('propagates errors from the Azure DevOps API', async () => {
+      mockTestPlanApi.getTestPlanById.mockRejectedValue(new Error('plan not found'));
+
+      await expect(service.getTestPlanById({ planId: 999 })).rejects.toThrow('plan not found');
+    });
+  });
+
+  describe('deleteTestPlan', () => {
+    it('deletes the plan', async () => {
+      mockTestPlanApi.deleteTestPlan.mockResolvedValue(undefined);
+
+      await service.deleteTestPlan({ planId: 17074 });
+
+      expect(mockTestPlanApi.deleteTestPlan).toHaveBeenCalledWith('Engineering', 17074);
+    });
+  });
+
+  describe('createTestSuite', () => {
+    it('defaults to a static suite and maps the parent suite reference', async () => {
+      const suite = { id: 2, name: 'Enrollment Videos' };
+      mockTestPlanApi.createTestSuite.mockResolvedValue(suite);
+
+      const result = await service.createTestSuite({ planId: 17074, name: 'Enrollment Videos', parentSuiteId: 17074 });
+
+      expect(result).toBe(suite);
+      expect(mockTestPlanApi.createTestSuite).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Enrollment Videos',
+          suiteType: TestSuiteType.StaticTestSuite,
+          parentSuite: { id: 17074, name: '' }
+        }),
+        'Engineering',
+        17074
+      );
+    });
+
+    it('maps dynamicTestSuite to the correct enum value', async () => {
+      mockTestPlanApi.createTestSuite.mockResolvedValue({ id: 3 });
+
+      await service.createTestSuite({
+        planId: 17074,
+        name: 'Query suite',
+        parentSuiteId: 17074,
+        suiteType: 'dynamicTestSuite',
+        queryString: "SELECT * FROM WorkItems"
+      });
+
+      expect(mockTestPlanApi.createTestSuite).toHaveBeenCalledWith(
+        expect.objectContaining({ suiteType: TestSuiteType.DynamicTestSuite, queryString: "SELECT * FROM WorkItems" }),
+        'Engineering',
+        17074
+      );
+    });
+  });
+
+  describe('getTestSuites', () => {
+    it('lists suites for a plan with children expanded', async () => {
+      const suites = [{ id: 17075, name: 'Enrollment Videos' }];
+      mockTestPlanApi.getTestSuitesForPlan.mockResolvedValue(suites);
+
+      const result = await service.getTestSuites({ planId: 17074 });
+
+      expect(result).toBe(suites);
+      expect(mockTestPlanApi.getTestSuitesForPlan).toHaveBeenCalledWith(
+        'Engineering',
+        17074,
+        SuiteExpand.Children,
+        undefined,
+        undefined
+      );
+    });
+  });
+
+  describe('getTestCasesFromSuite', () => {
+    it('lists test cases contained in a suite', async () => {
+      const testCases = [{ workItem: { id: 17077, name: 'Enrollment Videos: Saving a video...' } }];
+      mockTestPlanApi.getTestCaseList.mockResolvedValue(testCases);
+
+      const result = await service.getTestCasesFromSuite({ planId: 17074, suiteId: 17075 });
+
+      expect(result).toBe(testCases);
+      expect(mockTestPlanApi.getTestCaseList).toHaveBeenCalledWith(
+        'Engineering',
+        17074,
+        17075,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined
+      );
+    });
+
+    it('passes isRecursive through to include child suites', async () => {
+      mockTestPlanApi.getTestCaseList.mockResolvedValue([]);
+
+      await service.getTestCasesFromSuite({ planId: 17074, suiteId: 17075, isRecursive: true });
+
+      expect(mockTestPlanApi.getTestCaseList).toHaveBeenCalledWith(
+        'Engineering',
+        17074,
+        17075,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true
+      );
+    });
+
+    it('propagates errors from the Azure DevOps API', async () => {
+      mockTestPlanApi.getTestCaseList.mockRejectedValue(new Error('suite not found'));
+
+      await expect(service.getTestCasesFromSuite({ planId: 17074, suiteId: 404 })).rejects.toThrow('suite not found');
+    });
+  });
+
+  describe('addTestCasesToSuite', () => {
+    it('wraps each id as a work item reference', async () => {
+      mockTestPlanApi.addTestCasesToSuite.mockResolvedValue([{ workItem: { id: 17077 } }]);
+
+      await service.addTestCasesToSuite({ planId: 17074, suiteId: 17075, testCaseIds: [17077, 18275] });
+
+      expect(mockTestPlanApi.addTestCasesToSuite).toHaveBeenCalledWith(
+        [{ workItem: { id: 17077 } }, { workItem: { id: 18275 } }],
+        'Engineering',
+        17074,
+        17075
+      );
+    });
+  });
+
+  describe('getSuitesForTestCase', () => {
+    it('looks up suites without a project argument', async () => {
+      const suites = [{ id: 17075, name: 'Enrollment Videos' }];
+      mockTestPlanApi.getSuitesByTestCaseId.mockResolvedValue(suites);
+
+      const result = await service.getSuitesForTestCase({ testCaseId: 17077 });
+
+      expect(result).toBe(suites);
+      expect(mockTestPlanApi.getSuitesByTestCaseId).toHaveBeenCalledWith(17077);
+    });
+  });
+
+  describe('removeTestCasesFromSuite', () => {
+    it('joins the test case ids into a comma-separated string', async () => {
+      mockTestPlanApi.removeTestCasesFromSuite.mockResolvedValue(undefined);
+
+      await service.removeTestCasesFromSuite({ planId: 17074, suiteId: 17075, testCaseIds: [17077, 18275] });
+
+      expect(mockTestPlanApi.removeTestCasesFromSuite).toHaveBeenCalledWith('Engineering', 17074, 17075, '17077,18275');
+    });
+  });
+
+  describe('deleteTestCase', () => {
+    it('deletes the test case work item', async () => {
+      mockTestPlanApi.deleteTestCase.mockResolvedValue(undefined);
+
+      await service.deleteTestCase({ testCaseId: 17077 });
+
+      expect(mockTestPlanApi.deleteTestCase).toHaveBeenCalledWith('Engineering', 17077);
+    });
+  });
+});

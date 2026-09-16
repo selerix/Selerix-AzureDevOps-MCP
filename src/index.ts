@@ -8,6 +8,7 @@ import { BoardsSprintsTools } from './Tools/BoardsSprintsTools';
 import { ProjectTools } from './Tools/ProjectTools';
 import { GitTools } from './Tools/GitTools';
 import { TestingCapabilitiesTools } from './Tools/TestingCapabilitiesTools';
+import { TestPlansTools } from './Tools/TestPlansTools';
 import { DevSecOpsTools } from './Tools/DevSecOpsTools';
 import { ArtifactManagementTools } from './Tools/ArtifactManagementTools';
 import { AIAssistedDevelopmentTools } from './Tools/AIAssistedDevelopmentTools';
@@ -30,6 +31,7 @@ async function main() {
     const projectTools = new ProjectTools(azureDevOpsConfig);
     const gitTools = new GitTools(azureDevOpsConfig);
     const testingCapabilitiesTools = new TestingCapabilitiesTools(azureDevOpsConfig);
+    const testPlansTools = new TestPlansTools(azureDevOpsConfig);
     const devSecOpsTools = new DevSecOpsTools(azureDevOpsConfig);
     const artifactManagementTools = new ArtifactManagementTools(azureDevOpsConfig);
     const aiAssistedDevelopmentTools = new AIAssistedDevelopmentTools(azureDevOpsConfig);
@@ -1180,7 +1182,268 @@ async function main() {
         };
       }
     );
-    
+
+    // Register Test Plans Tools
+    allowedTools.has("createTestPlan") && server.tool("createTestPlan",
+      "Create a new test plan",
+      {
+        name: z.string().describe("Name of the test plan"),
+        iteration: z.string().describe("Iteration path of the test plan"),
+        areaPath: z.string().optional().describe("Area path of the test plan"),
+        description: z.string().optional().describe("Description of the test plan"),
+        startDate: z.string().optional().describe("Start date of the test plan (ISO date string)"),
+        endDate: z.string().optional().describe("End date of the test plan (ISO date string)"),
+        state: z.string().optional().describe("State of the test plan")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.createTestPlan(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestPlans") && server.tool("getTestPlans",
+      "List test plans in the project",
+      {
+        owner: z.string().optional().describe("Filter by owner"),
+        includePlanDetails: z.boolean().optional().describe("Include full plan details"),
+        filterActivePlans: z.boolean().optional().describe("Only include active plans"),
+        continuationToken: z.string().optional().describe("Continuation token for pagination")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.getTestPlans(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestPlanById") && server.tool("getTestPlanById",
+      "Get a test plan by ID",
+      {
+        planId: z.number().describe("ID of the test plan")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.getTestPlanById(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("updateTestPlan") && server.tool("updateTestPlan",
+      "Update an existing test plan",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        name: z.string().optional().describe("New name of the test plan"),
+        iteration: z.string().optional().describe("New iteration path of the test plan"),
+        areaPath: z.string().optional().describe("New area path of the test plan"),
+        description: z.string().optional().describe("New description of the test plan"),
+        startDate: z.string().optional().describe("New start date (ISO date string)"),
+        endDate: z.string().optional().describe("New end date (ISO date string)"),
+        state: z.string().optional().describe("New state of the test plan"),
+        revision: z.number().optional().describe("Current revision of the test plan")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.updateTestPlan(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("deleteTestPlan") && server.tool("deleteTestPlan",
+      "Delete a test plan",
+      {
+        planId: z.number().describe("ID of the test plan to delete")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.deleteTestPlan(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("createTestSuite") && server.tool("createTestSuite",
+      "Create a new test suite under a test plan",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        name: z.string().describe("Name of the test suite"),
+        parentSuiteId: z.number().describe("ID of the parent suite (e.g. the plan's root suite)"),
+        suiteType: z.enum(['staticTestSuite', 'dynamicTestSuite', 'requirementTestSuite']).optional().describe("Type of the test suite (defaults to staticTestSuite)"),
+        queryString: z.string().optional().describe("WIQL query string, required for dynamicTestSuite")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.createTestSuite(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestSuites") && server.tool("getTestSuites",
+      "List test suites in a test plan",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        asTreeView: z.boolean().optional().describe("Return suites structured as a tree"),
+        continuationToken: z.string().optional().describe("Continuation token for pagination")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.getTestSuites(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestSuiteById") && server.tool("getTestSuiteById",
+      "Get a test suite by ID",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        suiteId: z.number().describe("ID of the test suite"),
+        includeChildren: z.boolean().optional().describe("Include child suites in the response")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.getTestSuiteById(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("updateTestSuite") && server.tool("updateTestSuite",
+      "Update an existing test suite",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        suiteId: z.number().describe("ID of the test suite"),
+        name: z.string().optional().describe("New name of the test suite"),
+        queryString: z.string().optional().describe("New WIQL query string (dynamicTestSuite only)")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.updateTestSuite(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("deleteTestSuite") && server.tool("deleteTestSuite",
+      "Delete a test suite",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        suiteId: z.number().describe("ID of the test suite to delete")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.deleteTestSuite(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("addTestCasesToSuite") && server.tool("addTestCasesToSuite",
+      "Add existing test cases to a test suite",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        suiteId: z.number().describe("ID of the test suite"),
+        testCaseIds: z.array(z.number()).describe("IDs of the test cases to add")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.addTestCasesToSuite(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestCasesFromSuite") && server.tool("getTestCasesFromSuite",
+      "List test cases contained in a test suite",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        suiteId: z.number().describe("ID of the test suite"),
+        isRecursive: z.boolean().optional().describe("Include test cases from child suites")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.getTestCasesFromSuite(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getSuitesForTestCase") && server.tool("getSuitesForTestCase",
+      "Find which test suites contain a given test case",
+      {
+        testCaseId: z.number().describe("ID of the test case")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.getSuitesForTestCase(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("removeTestCasesFromSuite") && server.tool("removeTestCasesFromSuite",
+      "Remove test cases from a test suite (does not delete the test case work items)",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        suiteId: z.number().describe("ID of the test suite"),
+        testCaseIds: z.array(z.number()).describe("IDs of the test cases to remove from the suite")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.removeTestCasesFromSuite(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("deleteTestCase") && server.tool("deleteTestCase",
+      "Permanently delete a test case work item",
+      {
+        testCaseId: z.number().describe("ID of the test case to delete")
+      },
+      async (params, extra) => {
+        const result = await testPlansTools.deleteTestCase(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     // Register DevSecOps Tools
     allowedTools.has("runSecurityScan") && server.tool("runSecurityScan", 
       "Run security scans on repositories",

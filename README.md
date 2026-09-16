@@ -89,6 +89,15 @@ The integration is organized into eight main tool categories:
 - Convert findings to work items
 - Get exploratory test statistics
 
+### Test Plans Tools
+- Create, list, get, update, and delete test plans
+- Create, list, get, update, and delete test suites
+- Add test cases to a test suite
+- List test cases contained in a test suite
+- Find which test suites contain a given test case
+- Remove test cases from a test suite
+- Delete a test case work item
+
 ### DevSecOps Tools
 - Run security scans
 - Get security scan results
