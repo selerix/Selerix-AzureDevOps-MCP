@@ -86,6 +86,7 @@ export interface GetTestCasesFromSuiteParams {
   planId: number;
   suiteId: number;
   isRecursive?: boolean;
+  continuationToken?: string;
 }
 
 export interface GetSuitesForTestCaseParams {

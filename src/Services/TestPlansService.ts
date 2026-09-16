@@ -240,7 +240,7 @@ export class TestPlansService extends AzureDevOpsService {
         undefined,
         undefined,
         undefined,
-        undefined,
+        params.continuationToken,
         undefined,
         undefined,
         undefined,

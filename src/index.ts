@@ -15,10 +15,7 @@ import { AIAssistedDevelopmentTools } from './Tools/AIAssistedDevelopmentTools';
 import { z } from 'zod';
 import { EntraAuthHandler } from './Services/EntraAuthHandler';
 
-const isoDateString = z.string().refine(
-  (value) => !isNaN(Date.parse(value)),
-  { message: "Must be a valid ISO date string" }
-);
+const isoDateString = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
 
 async function main() {
   try {
@@ -1391,7 +1388,8 @@ async function main() {
       {
         planId: z.number().describe("ID of the test plan"),
         suiteId: z.number().describe("ID of the test suite"),
-        isRecursive: z.boolean().optional().describe("Include test cases from child suites")
+        isRecursive: z.boolean().optional().describe("Include test cases from child suites"),
+        continuationToken: z.string().optional().describe("Continuation token for pagination")
       },
       async (params, extra) => {
         const result = await testPlansTools.getTestCasesFromSuite(params);

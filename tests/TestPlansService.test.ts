@@ -268,6 +268,26 @@ describe('TestPlansService', () => {
       );
     });
 
+    it('passes a continuation token through to fetch a subsequent page', async () => {
+      mockTestPlanApi.getTestCaseList.mockResolvedValue([]);
+
+      await service.getTestCasesFromSuite({ planId: 17074, suiteId: 17075, continuationToken: 'page-2-token' });
+
+      expect(mockTestPlanApi.getTestCaseList).toHaveBeenCalledWith(
+        'Engineering',
+        17074,
+        17075,
+        undefined,
+        undefined,
+        undefined,
+        'page-2-token',
+        undefined,
+        undefined,
+        undefined,
+        undefined
+      );
+    });
+
     it('passes isRecursive through to include child suites', async () => {
       mockTestPlanApi.getTestCaseList.mockResolvedValue([]);
 
