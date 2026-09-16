@@ -691,20 +691,23 @@ export class WorkItemService extends AzureDevOpsService {
       );
 
       if (params.savePath) {
-        await pipeline(contentStream, fs.createWriteStream(params.savePath));
+        // Write to a temporary sibling first and rename into place only once the download has
+        // fully succeeded. createWriteStream truncates the destination immediately, and a
+        // transient network/Azure error partway through the pipeline would otherwise destroy
+        // any existing file at savePath and leave a partial one behind.
+        const tempPath = `${params.savePath}.download-${process.pid}-${Date.now()}.tmp`;
+        try {
+          await pipeline(contentStream, fs.createWriteStream(tempPath));
+        } catch (error) {
+          await fs.promises.rm(tempPath, { force: true });
+          throw error;
+        }
+        await fs.promises.rename(tempPath, params.savePath);
         const { size } = fs.statSync(params.savePath);
         return { fileName: params.fileName, savePath: params.savePath, size };
       }
 
-      const buffer = await this.streamToBuffer(contentStream);
-      if (buffer.length > MAX_BASE64_ATTACHMENT_BYTES) {
-        throw new Error(
-          `Attachment content is too large to return inline (~${Math.round(buffer.length / 1024)} KB ` +
-          `decoded, limit is ${MAX_BASE64_ATTACHMENT_BYTES / 1024} KB). Provide savePath to write ` +
-          `it directly to disk instead.`
-        );
-      }
-
+      const buffer = await this.bufferWithLimit(contentStream, MAX_BASE64_ATTACHMENT_BYTES);
       return { fileName: params.fileName, base64Content: buffer.toString('base64'), size: buffer.length };
     } catch (error) {
       console.error(`Error getting attachment content for ${params.id}:`, error);
@@ -712,10 +715,25 @@ export class WorkItemService extends AzureDevOpsService {
     }
   }
 
-  private async streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  /**
+   * Buffers a stream, but aborts and destroys it as soon as its content exceeds `limitBytes`,
+   * instead of buffering the entire thing before checking - a large attachment would otherwise
+   * be fully allocated on the server heap before being rejected.
+   */
+  private async bufferWithLimit(stream: NodeJS.ReadableStream, limitBytes: number): Promise<Buffer> {
     const chunks: Buffer[] = [];
+    let total = 0;
     for await (const chunk of stream as AsyncIterable<Buffer | string>) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.length;
+      if (total > limitBytes) {
+        (stream as Readable).destroy();
+        throw new Error(
+          `Attachment content is too large to return inline (over ${limitBytes / 1024} KB decoded, ` +
+          `limit is ${limitBytes / 1024} KB). Provide savePath to write it directly to disk instead.`
+        );
+      }
+      chunks.push(buf);
     }
     return Buffer.concat(chunks);
   }

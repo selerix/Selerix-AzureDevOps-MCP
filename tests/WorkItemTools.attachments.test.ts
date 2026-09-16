@@ -119,6 +119,68 @@ describe('WorkItemTools attachment methods', () => {
     });
   });
 
+  describe('getWorkItemAttachment', () => {
+    it('formats a success response for an inline (base64) result', async () => {
+      serviceInstance.getWorkItemAttachment.mockResolvedValue({
+        fileName: 'shot.png',
+        base64Content: 'aGVsbG8=',
+        size: 5
+      });
+
+      const params = { id: 'abc-123', fileName: 'shot.png' };
+      const result = await tools.getWorkItemAttachment(params);
+
+      expect(serviceInstance.getWorkItemAttachment).toHaveBeenCalledWith(params);
+      expect(result.isError).toBeFalsy();
+      expect(result.rawData).toEqual({ fileName: 'shot.png', base64Content: 'aGVsbG8=', size: 5 });
+      expect(result.content[0].text).toContain('shot.png');
+      expect(result.content[0].text).toContain('5');
+      expect(result.content[0].text).toContain('base64Content');
+    });
+
+    it('formats a success response for a saved-to-disk result', async () => {
+      serviceInstance.getWorkItemAttachment.mockResolvedValue({
+        fileName: 'shot.png',
+        savePath: 'C:\\Users\\me\\Downloads\\shot.png',
+        size: 328215
+      });
+
+      const result = await tools.getWorkItemAttachment({
+        id: 'abc-123',
+        fileName: 'shot.png',
+        savePath: 'C:\\Users\\me\\Downloads\\shot.png'
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain('shot.png');
+      expect(result.content[0].text).toContain('328215');
+      expect(result.content[0].text).toContain('C:\\Users\\me\\Downloads\\shot.png');
+    });
+
+    it('falls back to the attachment id in the message when fileName is omitted', async () => {
+      serviceInstance.getWorkItemAttachment.mockResolvedValue({
+        base64Content: 'aGVsbG8=',
+        size: 5
+      });
+
+      const result = await tools.getWorkItemAttachment({ id: 'abc-123' });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain('abc-123');
+    });
+
+    it('formats an error response instead of throwing when the service call fails', async () => {
+      serviceInstance.getWorkItemAttachment.mockRejectedValue(
+        new Error('too large to return inline')
+      );
+
+      const result = await tools.getWorkItemAttachment({ id: 'abc-123' });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('too large to return inline');
+    });
+  });
+
   describe('addWorkItemAttachment', () => {
     it('formats a success response containing the work item id and attachment URL', async () => {
       serviceInstance.addWorkItemAttachment.mockResolvedValue({

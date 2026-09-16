@@ -392,6 +392,27 @@ describe('WorkItemService attachment methods', () => {
       );
     });
 
+    it('aborts as soon as the limit is exceeded instead of buffering the whole stream first', async () => {
+      // A large number of 600-byte chunks (well past what Readable's internal read-ahead
+      // buffer would ever pull regardless of consumer speed). If bufferWithLimit only checked
+      // the size after fully draining the stream (the old behavior), every chunk would be
+      // requested; aborting mid-stream means the source is never driven to completion.
+      const TOTAL_CHUNKS = 1000;
+      let chunksRequested = 0;
+      async function* chunks() {
+        for (let i = 0; i < TOTAL_CHUNKS; i++) {
+          chunksRequested++;
+          yield Buffer.alloc(600, i % 256);
+        }
+      }
+      mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from(chunks()));
+
+      await expect(service.getWorkItemAttachment({ id: 'abc-123' })).rejects.toThrow(
+        /too large to return inline/
+      );
+      expect(chunksRequested).toBeLessThan(TOTAL_CHUNKS);
+    });
+
     describe('with savePath', () => {
       let tempFilePath: string;
 
@@ -419,6 +440,30 @@ describe('WorkItemService attachment methods', () => {
           size: originalBytes.length
         });
         expect(fs.readFileSync(tempFilePath).equals(originalBytes)).toBe(true);
+      });
+
+      it('leaves an existing destination file untouched when the download fails partway through', async () => {
+        const preExistingBytes = Buffer.from('pre-existing file content, must survive a failed download');
+        fs.writeFileSync(tempFilePath, preExistingBytes);
+
+        async function* chunks() {
+          yield Buffer.from('partial data that should never land at savePath');
+          throw new Error('network blip');
+        }
+        mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from(chunks()));
+
+        await expect(
+          service.getWorkItemAttachment({ id: 'abc-123', fileName: 'shot.png', savePath: tempFilePath })
+        ).rejects.toThrow('network blip');
+
+        // The pre-existing file must not have been truncated/overwritten by the failed attempt.
+        expect(fs.readFileSync(tempFilePath).equals(preExistingBytes)).toBe(true);
+
+        // No leftover .tmp sibling file from the failed download attempt.
+        const leftoverTempFiles = fs
+          .readdirSync(path.dirname(tempFilePath))
+          .filter((name) => name.startsWith(path.basename(tempFilePath)) && name.endsWith('.tmp'));
+        expect(leftoverTempFiles).toEqual([]);
       });
     });
 
