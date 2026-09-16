@@ -47,6 +47,7 @@ export interface CreateTestSuiteParams {
   parentSuiteId: number;
   suiteType?: TestSuiteTypeParam;
   queryString?: string;
+  requirementId?: number;
 }
 
 export interface GetTestSuitesParams {

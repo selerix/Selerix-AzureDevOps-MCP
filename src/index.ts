@@ -1283,7 +1283,8 @@ async function main() {
         name: z.string().describe("Name of the test suite"),
         parentSuiteId: z.number().describe("ID of the parent suite (e.g. the plan's root suite)"),
         suiteType: z.enum(['staticTestSuite', 'dynamicTestSuite', 'requirementTestSuite']).optional().describe("Type of the test suite (defaults to staticTestSuite)"),
-        queryString: z.string().optional().describe("WIQL query string, required for dynamicTestSuite")
+        queryString: z.string().optional().describe("WIQL query string, required for dynamicTestSuite"),
+        requirementId: z.number().optional().describe("ID of the requirement work item, required for requirementTestSuite")
       },
       async (params, extra) => {
         const result = await testPlansTools.createTestSuite(params);
@@ -1368,7 +1369,7 @@ async function main() {
       {
         planId: z.number().describe("ID of the test plan"),
         suiteId: z.number().describe("ID of the test suite"),
-        testCaseIds: z.array(z.number()).describe("IDs of the test cases to add")
+        testCaseIds: z.array(z.number()).min(1, "At least one test case ID is required").describe("IDs of the test cases to add")
       },
       async (params, extra) => {
         const result = await testPlansTools.addTestCasesToSuite(params);
@@ -1417,7 +1418,7 @@ async function main() {
       {
         planId: z.number().describe("ID of the test plan"),
         suiteId: z.number().describe("ID of the test suite"),
-        testCaseIds: z.array(z.number()).describe("IDs of the test cases to remove from the suite")
+        testCaseIds: z.array(z.number()).min(1, "At least one test case ID is required").describe("IDs of the test cases to remove from the suite")
       },
       async (params, extra) => {
         const result = await testPlansTools.removeTestCasesFromSuite(params);

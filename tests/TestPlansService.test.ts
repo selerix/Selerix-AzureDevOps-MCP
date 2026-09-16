@@ -121,6 +121,37 @@ describe('TestPlansService', () => {
         17074
       );
     });
+
+    it('rejects a requirementTestSuite without a requirementId', async () => {
+      await expect(
+        service.createTestSuite({
+          planId: 17074,
+          name: 'Requirement suite',
+          parentSuiteId: 17074,
+          suiteType: 'requirementTestSuite'
+        })
+      ).rejects.toThrow("requirementId is required when suiteType is 'requirementTestSuite'");
+
+      expect(mockTestPlanApi.createTestSuite).not.toHaveBeenCalled();
+    });
+
+    it('passes requirementId through for a requirementTestSuite', async () => {
+      mockTestPlanApi.createTestSuite.mockResolvedValue({ id: 4 });
+
+      await service.createTestSuite({
+        planId: 17074,
+        name: 'Requirement suite',
+        parentSuiteId: 17074,
+        suiteType: 'requirementTestSuite',
+        requirementId: 12345
+      });
+
+      expect(mockTestPlanApi.createTestSuite).toHaveBeenCalledWith(
+        expect.objectContaining({ suiteType: TestSuiteType.RequirementTestSuite, requirementId: 12345 }),
+        'Engineering',
+        17074
+      );
+    });
   });
 
   describe('getTestSuites', () => {

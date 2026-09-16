@@ -121,11 +121,15 @@ export class TestPlansService extends AzureDevOpsService {
 
   public async createTestSuite(params: CreateTestSuiteParams): Promise<TestPlanInterfaces.TestSuite> {
     try {
+      if (params.suiteType === 'requirementTestSuite' && !params.requirementId) {
+        throw new Error("requirementId is required when suiteType is 'requirementTestSuite'");
+      }
       const testPlanApi = await this.getTestPlanApi();
       const createParams: TestPlanInterfaces.TestSuiteCreateParams = {
         name: params.name,
         suiteType: SUITE_TYPE_MAP[params.suiteType || 'staticTestSuite'],
         queryString: params.queryString,
+        requirementId: params.requirementId,
         parentSuite: { id: params.parentSuiteId, name: '' },
       };
       return await testPlanApi.createTestSuite(createParams, this.config.project, params.planId);

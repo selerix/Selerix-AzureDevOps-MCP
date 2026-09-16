@@ -14,7 +14,7 @@ This server provides a convenient API for interacting with Azure DevOps services
 
 ## Features
 
-The integration is organized into eight main tool categories:
+The integration is organized into nine main tool categories:
 
 ### Work Item Tools
 - List work items using WIQL queries
