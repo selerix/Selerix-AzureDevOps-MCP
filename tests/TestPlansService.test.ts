@@ -75,6 +75,35 @@ describe('TestPlansService', () => {
     });
   });
 
+  describe('updateTestPlan', () => {
+    it('sends the given name and iteration as-is', async () => {
+      mockTestPlanApi.updateTestPlan.mockResolvedValue({ id: 17074 });
+
+      await service.updateTestPlan({ planId: 17074, name: 'Renamed Plan', iteration: 'Engineering\\Sprint 2' });
+
+      expect(mockTestPlanApi.getTestPlanById).not.toHaveBeenCalled();
+      expect(mockTestPlanApi.updateTestPlan).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Renamed Plan', iteration: 'Engineering\\Sprint 2' }),
+        'Engineering',
+        17074
+      );
+    });
+
+    it('backfills name and iteration from the existing plan when only updating another field', async () => {
+      mockTestPlanApi.getTestPlanById.mockResolvedValue({ id: 17074, name: 'Sprint 1 Plan', iteration: 'Engineering\\Sprint 1' });
+      mockTestPlanApi.updateTestPlan.mockResolvedValue({ id: 17074 });
+
+      await service.updateTestPlan({ planId: 17074, state: 'Active' });
+
+      expect(mockTestPlanApi.getTestPlanById).toHaveBeenCalledWith('Engineering', 17074);
+      expect(mockTestPlanApi.updateTestPlan).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Sprint 1 Plan', iteration: 'Engineering\\Sprint 1', state: 'Active' }),
+        'Engineering',
+        17074
+      );
+    });
+  });
+
   describe('deleteTestPlan', () => {
     it('deletes the plan', async () => {
       mockTestPlanApi.deleteTestPlan.mockResolvedValue(undefined);
@@ -152,6 +181,19 @@ describe('TestPlansService', () => {
         17074
       );
     });
+
+    it('rejects a dynamicTestSuite without a queryString', async () => {
+      await expect(
+        service.createTestSuite({
+          planId: 17074,
+          name: 'Query suite',
+          parentSuiteId: 17074,
+          suiteType: 'dynamicTestSuite'
+        })
+      ).rejects.toThrow("queryString is required when suiteType is 'dynamicTestSuite'");
+
+      expect(mockTestPlanApi.createTestSuite).not.toHaveBeenCalled();
+    });
   });
 
   describe('getTestSuites', () => {
@@ -168,6 +210,37 @@ describe('TestPlansService', () => {
         SuiteExpand.Children,
         undefined,
         undefined
+      );
+    });
+  });
+
+  describe('updateTestSuite', () => {
+    it('sends the given name as-is', async () => {
+      mockTestPlanApi.updateTestSuite.mockResolvedValue({ id: 17075 });
+
+      await service.updateTestSuite({ planId: 17074, suiteId: 17075, name: 'Renamed Suite' });
+
+      expect(mockTestPlanApi.getTestSuiteById).not.toHaveBeenCalled();
+      expect(mockTestPlanApi.updateTestSuite).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Renamed Suite' }),
+        'Engineering',
+        17074,
+        17075
+      );
+    });
+
+    it('backfills name from the existing suite when only updating the query string', async () => {
+      mockTestPlanApi.getTestSuiteById.mockResolvedValue({ id: 17075, name: 'Enrollment Videos' });
+      mockTestPlanApi.updateTestSuite.mockResolvedValue({ id: 17075 });
+
+      await service.updateTestSuite({ planId: 17074, suiteId: 17075, queryString: "SELECT * FROM WorkItems" });
+
+      expect(mockTestPlanApi.getTestSuiteById).toHaveBeenCalledWith('Engineering', 17074, 17075);
+      expect(mockTestPlanApi.updateTestSuite).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Enrollment Videos', queryString: "SELECT * FROM WorkItems" }),
+        'Engineering',
+        17074,
+        17075
       );
     });
   });

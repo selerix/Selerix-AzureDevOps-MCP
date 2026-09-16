@@ -90,9 +90,16 @@ export class TestPlansService extends AzureDevOpsService {
   public async updateTestPlan(params: UpdateTestPlanParams): Promise<TestPlanInterfaces.TestPlan> {
     try {
       const testPlanApi = await this.getTestPlanApi();
+      let name = params.name;
+      let iteration = params.iteration;
+      if (name === undefined || iteration === undefined) {
+        const existing = await testPlanApi.getTestPlanById(this.config.project, params.planId);
+        name = name ?? existing.name;
+        iteration = iteration ?? existing.iteration;
+      }
       const updateParams: TestPlanInterfaces.TestPlanUpdateParams = {
-        name: params.name as string,
-        iteration: params.iteration as string,
+        name,
+        iteration,
         areaPath: params.areaPath,
         description: params.description,
         startDate: params.startDate ? new Date(params.startDate) : undefined,
@@ -123,6 +130,9 @@ export class TestPlansService extends AzureDevOpsService {
     try {
       if (params.suiteType === 'requirementTestSuite' && !params.requirementId) {
         throw new Error("requirementId is required when suiteType is 'requirementTestSuite'");
+      }
+      if (params.suiteType === 'dynamicTestSuite' && !params.queryString) {
+        throw new Error("queryString is required when suiteType is 'dynamicTestSuite'");
       }
       const testPlanApi = await this.getTestPlanApi();
       const createParams: TestPlanInterfaces.TestSuiteCreateParams = {
@@ -174,8 +184,13 @@ export class TestPlansService extends AzureDevOpsService {
   public async updateTestSuite(params: UpdateTestSuiteParams): Promise<TestPlanInterfaces.TestSuite> {
     try {
       const testPlanApi = await this.getTestPlanApi();
+      let name = params.name;
+      if (name === undefined) {
+        const existing = await testPlanApi.getTestSuiteById(this.config.project, params.planId, params.suiteId);
+        name = existing.name;
+      }
       const updateParams: TestPlanInterfaces.TestSuiteUpdateParams = {
-        name: params.name as string,
+        name,
         queryString: params.queryString,
       };
       return await testPlanApi.updateTestSuite(updateParams, this.config.project, params.planId, params.suiteId);
