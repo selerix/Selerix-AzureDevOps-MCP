@@ -328,6 +328,23 @@ async function main() {
       }
     );
 
+    allowedTools.has("getWorkItemAttachment") && server.tool("getWorkItemAttachment",
+      "Download the actual content of an attachment linked to a work item (e.g. to read a screenshot's contents), not just its metadata. Use listWorkItemAttachments first to get the attachment's id and file name.",
+      {
+        id: z.string().describe("Attachment ID (GUID), as returned by listWorkItemAttachments"),
+        fileName: z.string().optional().describe("File name of the attachment, as returned by listWorkItemAttachments"),
+        savePath: z.string().optional().describe("Absolute path to write the attachment content to on disk (same machine as this MCP server). Use this for anything beyond a trivial size: the server streams directly to disk instead of returning bytes inline. If omitted, content is returned inline as base64Content, but rejected above 1 KB decoded.")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.getWorkItemAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     allowedTools.has("uploadAttachment") && server.tool("uploadAttachment",
       "Upload a file (e.g. a screenshot) to Azure DevOps and get back its attachment URL, for embedding inline via an <img> tag in a work item's rich-text fields (Description, Repro Steps) or in a comment. Does not link the file to any work item by itself — pair with updateWorkItem/addWorkItemComment to place the returned URL, or use addWorkItemAttachment to also create a formal attachment link.",
       {
