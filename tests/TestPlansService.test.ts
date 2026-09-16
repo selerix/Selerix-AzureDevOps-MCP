@@ -14,40 +14,42 @@ describe('TestPlansService', () => {
   let service: TestPlansService;
   let mockTestPlanApi: {
     createTestPlan: jest.Mock;
-    getTestPlans: jest.Mock;
     getTestPlanById: jest.Mock;
     updateTestPlan: jest.Mock;
     deleteTestPlan: jest.Mock;
     createTestSuite: jest.Mock;
-    getTestSuitesForPlan: jest.Mock;
     getTestSuiteById: jest.Mock;
     updateTestSuite: jest.Mock;
     deleteTestSuite: jest.Mock;
     addTestCasesToSuite: jest.Mock;
-    getTestCaseList: jest.Mock;
     getSuitesByTestCaseId: jest.Mock;
     removeTestCasesFromSuite: jest.Mock;
     deleteTestCase: jest.Mock;
+    vsoClient: { getVersioningData: jest.Mock };
+    rest: { get: jest.Mock };
+    createRequestOptions: jest.Mock;
+    formatResponse: jest.Mock;
   };
 
   beforeEach(() => {
     service = new TestPlansService(testConfig);
     mockTestPlanApi = {
       createTestPlan: jest.fn(),
-      getTestPlans: jest.fn(),
       getTestPlanById: jest.fn(),
       updateTestPlan: jest.fn(),
       deleteTestPlan: jest.fn(),
       createTestSuite: jest.fn(),
-      getTestSuitesForPlan: jest.fn(),
       getTestSuiteById: jest.fn(),
       updateTestSuite: jest.fn(),
       deleteTestSuite: jest.fn(),
       addTestCasesToSuite: jest.fn(),
-      getTestCaseList: jest.fn(),
       getSuitesByTestCaseId: jest.fn(),
       removeTestCasesFromSuite: jest.fn(),
-      deleteTestCase: jest.fn()
+      deleteTestCase: jest.fn(),
+      vsoClient: { getVersioningData: jest.fn().mockResolvedValue({ requestUrl: 'https://dev.azure.com/fake', apiVersion: '7.2-preview.1' }) },
+      rest: { get: jest.fn().mockResolvedValue({ result: [], headers: {} }) },
+      createRequestOptions: jest.fn().mockReturnValue({}),
+      formatResponse: jest.fn((data) => data)
     };
     (service as any).getTestPlanApi = jest.fn().mockResolvedValue(mockTestPlanApi);
   });
@@ -196,21 +198,65 @@ describe('TestPlansService', () => {
     });
   });
 
+  describe('getTestPlans', () => {
+    it('lists plans and surfaces the next-page continuation token from the response header', async () => {
+      const plans = [{ id: 17074, name: 'Sprint 1 Plan' }];
+      mockTestPlanApi.rest.get.mockResolvedValue({ result: plans, headers: { 'x-ms-continuationtoken': 'plans-page-2' } });
+      mockTestPlanApi.formatResponse.mockReturnValue(plans);
+
+      const result = await service.getTestPlans({});
+
+      expect(result).toEqual({ items: plans, continuationToken: 'plans-page-2' });
+      expect(mockTestPlanApi.vsoClient.getVersioningData).toHaveBeenCalledWith(
+        '7.2-preview.1',
+        'testplan',
+        '0e292477-a0c2-47f3-a9b6-34f153d627f4',
+        { project: 'Engineering' },
+        expect.objectContaining({ continuationToken: undefined })
+      );
+    });
+
+    it('passes a continuation token through to fetch a subsequent page', async () => {
+      mockTestPlanApi.rest.get.mockResolvedValue({ result: [], headers: {} });
+      mockTestPlanApi.formatResponse.mockReturnValue([]);
+
+      await service.getTestPlans({ continuationToken: 'plans-page-2' });
+
+      expect(mockTestPlanApi.vsoClient.getVersioningData).toHaveBeenCalledWith(
+        '7.2-preview.1',
+        'testplan',
+        '0e292477-a0c2-47f3-a9b6-34f153d627f4',
+        { project: 'Engineering' },
+        expect.objectContaining({ continuationToken: 'plans-page-2' })
+      );
+    });
+  });
+
   describe('getTestSuites', () => {
-    it('lists suites for a plan with children expanded', async () => {
+    it('lists suites for a plan with children expanded and surfaces the next-page token', async () => {
       const suites = [{ id: 17075, name: 'Enrollment Videos' }];
-      mockTestPlanApi.getTestSuitesForPlan.mockResolvedValue(suites);
+      mockTestPlanApi.rest.get.mockResolvedValue({ result: suites, headers: { 'x-ms-continuationtoken': 'suites-page-2' } });
+      mockTestPlanApi.formatResponse.mockReturnValue(suites);
 
       const result = await service.getTestSuites({ planId: 17074 });
 
-      expect(result).toBe(suites);
-      expect(mockTestPlanApi.getTestSuitesForPlan).toHaveBeenCalledWith(
-        'Engineering',
-        17074,
-        SuiteExpand.Children,
-        undefined,
-        undefined
+      expect(result).toEqual({ items: suites, continuationToken: 'suites-page-2' });
+      expect(mockTestPlanApi.vsoClient.getVersioningData).toHaveBeenCalledWith(
+        '7.2-preview.1',
+        'testplan',
+        '1046d5d3-ab61-4ca7-a65a-36118a978256',
+        { project: 'Engineering', planId: 17074 },
+        expect.objectContaining({ expand: SuiteExpand.Children, continuationToken: undefined, asTreeView: undefined })
       );
+    });
+
+    it('has no next page when the response omits the continuation token header', async () => {
+      mockTestPlanApi.rest.get.mockResolvedValue({ result: [], headers: {} });
+      mockTestPlanApi.formatResponse.mockReturnValue([]);
+
+      const result = await service.getTestSuites({ planId: 17074 });
+
+      expect(result.continuationToken).toBeUndefined();
     });
   });
 
@@ -246,70 +292,55 @@ describe('TestPlansService', () => {
   });
 
   describe('getTestCasesFromSuite', () => {
-    it('lists test cases contained in a suite', async () => {
+    it('lists test cases contained in a suite and surfaces the next-page token', async () => {
       const testCases = [{ workItem: { id: 17077, name: 'Enrollment Videos: Saving a video...' } }];
-      mockTestPlanApi.getTestCaseList.mockResolvedValue(testCases);
+      mockTestPlanApi.rest.get.mockResolvedValue({ result: testCases, headers: { 'x-ms-continuationtoken': 'cases-page-2' } });
+      mockTestPlanApi.formatResponse.mockReturnValue(testCases);
 
       const result = await service.getTestCasesFromSuite({ planId: 17074, suiteId: 17075 });
 
-      expect(result).toBe(testCases);
-      expect(mockTestPlanApi.getTestCaseList).toHaveBeenCalledWith(
-        'Engineering',
-        17074,
-        17075,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined
+      expect(result).toEqual({ items: testCases, continuationToken: 'cases-page-2' });
+      expect(mockTestPlanApi.vsoClient.getVersioningData).toHaveBeenCalledWith(
+        '7.2-preview.3',
+        'testplan',
+        'a9bd61ac-45cf-4d13-9441-43dcd01edf8d',
+        { project: 'Engineering', planId: 17074, suiteId: 17075 },
+        expect.objectContaining({ continuationToken: undefined, isRecursive: undefined })
       );
     });
 
     it('passes a continuation token through to fetch a subsequent page', async () => {
-      mockTestPlanApi.getTestCaseList.mockResolvedValue([]);
+      mockTestPlanApi.rest.get.mockResolvedValue({ result: [], headers: {} });
+      mockTestPlanApi.formatResponse.mockReturnValue([]);
 
       await service.getTestCasesFromSuite({ planId: 17074, suiteId: 17075, continuationToken: 'page-2-token' });
 
-      expect(mockTestPlanApi.getTestCaseList).toHaveBeenCalledWith(
-        'Engineering',
-        17074,
-        17075,
-        undefined,
-        undefined,
-        undefined,
-        'page-2-token',
-        undefined,
-        undefined,
-        undefined,
-        undefined
+      expect(mockTestPlanApi.vsoClient.getVersioningData).toHaveBeenCalledWith(
+        '7.2-preview.3',
+        'testplan',
+        'a9bd61ac-45cf-4d13-9441-43dcd01edf8d',
+        { project: 'Engineering', planId: 17074, suiteId: 17075 },
+        expect.objectContaining({ continuationToken: 'page-2-token' })
       );
     });
 
     it('passes isRecursive through to include child suites', async () => {
-      mockTestPlanApi.getTestCaseList.mockResolvedValue([]);
+      mockTestPlanApi.rest.get.mockResolvedValue({ result: [], headers: {} });
+      mockTestPlanApi.formatResponse.mockReturnValue([]);
 
       await service.getTestCasesFromSuite({ planId: 17074, suiteId: 17075, isRecursive: true });
 
-      expect(mockTestPlanApi.getTestCaseList).toHaveBeenCalledWith(
-        'Engineering',
-        17074,
-        17075,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        true
+      expect(mockTestPlanApi.vsoClient.getVersioningData).toHaveBeenCalledWith(
+        '7.2-preview.3',
+        'testplan',
+        'a9bd61ac-45cf-4d13-9441-43dcd01edf8d',
+        { project: 'Engineering', planId: 17074, suiteId: 17075 },
+        expect.objectContaining({ isRecursive: true })
       );
     });
 
     it('propagates errors from the Azure DevOps API', async () => {
-      mockTestPlanApi.getTestCaseList.mockRejectedValue(new Error('suite not found'));
+      mockTestPlanApi.rest.get.mockRejectedValue(new Error('suite not found'));
 
       await expect(service.getTestCasesFromSuite({ planId: 17074, suiteId: 404 })).rejects.toThrow('suite not found');
     });

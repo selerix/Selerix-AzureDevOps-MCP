@@ -40,7 +40,7 @@ export class TestPlansTools {
   async getTestPlans(params: GetTestPlansParams): Promise<McpResponse> {
     try {
       const result = await this.service.getTestPlans(params);
-      return formatMcpResponse(result, `Found ${result.length} test plan(s)`);
+      return formatMcpResponse(result, `Found ${result.items.length} test plan(s)`);
     } catch (error: unknown) {
       console.error('Error listing test plans:', error);
       return formatErrorResponse(error);
@@ -90,7 +90,7 @@ export class TestPlansTools {
   async getTestSuites(params: GetTestSuitesParams): Promise<McpResponse> {
     try {
       const result = await this.service.getTestSuites(params);
-      return formatMcpResponse(result, `Found ${result.length} test suite(s) in plan ${params.planId}`);
+      return formatMcpResponse(result, `Found ${result.items.length} test suite(s) in plan ${params.planId}`);
     } catch (error: unknown) {
       console.error('Error listing test suites:', error);
       return formatErrorResponse(error);
@@ -140,7 +140,7 @@ export class TestPlansTools {
   async getTestCasesFromSuite(params: GetTestCasesFromSuiteParams): Promise<McpResponse> {
     try {
       const result = await this.service.getTestCasesFromSuite(params);
-      return formatMcpResponse(result, `Found ${result.length} test case(s) in suite ${params.suiteId}`);
+      return formatMcpResponse(result, `Found ${result.items.length} test case(s) in suite ${params.suiteId}`);
     } catch (error: unknown) {
       console.error('Error getting test cases from suite:', error);
       return formatErrorResponse(error);

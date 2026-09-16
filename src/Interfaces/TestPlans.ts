@@ -102,3 +102,10 @@ export interface RemoveTestCasesFromSuiteParams {
 export interface DeleteTestCaseParams {
   testCaseId: number;
 }
+
+// Paged result wrapper
+
+export interface PagedResult<T> {
+  items: T[];
+  continuationToken?: string;
+}
