@@ -51,7 +51,7 @@ server.tool("updateWorkItemState",
 
 ## Available Tool Instances
 
-The MCP server initializes four main tool instances, each handling different aspects of Azure DevOps:
+The MCP server initializes nine main tool instances, each handling different aspects of Azure DevOps:
 
 1. `workItemTools` - For work item management operations
 2. `boardsSprintsTools` - For board and sprint management operations
