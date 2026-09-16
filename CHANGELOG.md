@@ -7,6 +7,25 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-16
+
+`listWorkItemAttachments` only ever returned metadata (name/URL/size) - there was no way to read
+what a screenshot referenced in a bug's Repro Steps, or a test step's evidence, actually shows.
+
+### Added
+
+- **`getWorkItemAttachment`** — download an attachment's actual content, given the GUID `id`
+  returned by `listWorkItemAttachments`. Uses the same authenticated `azure-devops-node-api`
+  connection as every other tool (PAT/NTLM/Basic/Entra, on-premises or cloud).
+  - `savePath` streams content straight to disk for anything non-trivial in size. It's written
+    to a collision-resistant temporary sibling first and renamed into place only once the
+    download fully succeeds, so a transient network error (or a failed rename) never truncates
+    an existing file or leaves a partial one behind, and two concurrent downloads to the same
+    `savePath` can't clobber each other.
+  - Without `savePath`, content is buffered (aborting as soon as it exceeds the limit, rather
+    than after buffering the whole thing) and returned inline as `base64Content`, but rejected
+    above the same 1 KB decoded limit `uploadAttachment` already enforces.
+
 ## [1.3.0] - 2026-09-16
 
 Adds real Test Plan/Suite/Test Case management. Testing-capabilities tools like
