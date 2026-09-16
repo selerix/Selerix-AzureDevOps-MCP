@@ -7,6 +7,37 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-16
+
+Adds real Test Plan/Suite/Test Case management. Testing-capabilities tools like
+`runAutomatedTests` or `getTestHealthDashboard` were mocked and unrelated to Azure DevOps Test
+Plans; there was previously no way to read or manage Test Plan/Suite structure at all (suite
+membership isn't exposed through work item links or WIQL — it lives in a separate Test
+Management API).
+
+### Added
+
+- **`createTestPlan`**, **`getTestPlans`**, **`getTestPlanById`**, **`updateTestPlan`**,
+  **`deleteTestPlan`** — full CRUD for test plans. `updateTestPlan` backfills the
+  SDK-required `name`/`iteration` fields from the existing plan when a caller only wants to
+  change another field, instead of sending them as `undefined`.
+- **`createTestSuite`**, **`getTestSuites`**, **`getTestSuiteById`**, **`updateTestSuite`**,
+  **`deleteTestSuite`** — full CRUD for test suites, including `requirementTestSuite` (requires
+  `requirementId`) and `dynamicTestSuite` (requires `queryString`).
+- **`addTestCasesToSuite`**, **`getTestCasesFromSuite`**, **`getSuitesForTestCase`**,
+  **`removeTestCasesFromSuite`**, **`deleteTestCase`** — manage which test cases belong to a
+  suite, look up which suites contain a given test case, and delete a test case work item.
+- `getTestPlans`, `getTestSuites`, and `getTestCasesFromSuite` return `{ items, continuationToken }`
+  instead of a bare array. Azure DevOps returns the next-page token in the
+  `x-ms-continuationtoken` response header, which `azure-devops-node-api`'s generated
+  `ITestPlanApi` methods discard — these three replay the same request via the API client's
+  public `vsoClient`/`rest`/`createRequestOptions`/`formatResponse` members and read that header
+  directly so multi-page suites/plans/test-case lists can actually be paged through.
+- `startDate`/`endDate` on `createTestPlan`/`updateTestPlan` are validated as ISO date/datetime
+  strings at the MCP boundary (via `z.string().date()`/`z.string().datetime({ offset: true })`,
+  compatible with both Zod 3.25+ and Zod 4), rejecting locale-style or impossible calendar dates
+  instead of silently becoming `Invalid Date`.
+
 ## [1.2.0] - 2026-09-15
 
 Rounds out comment support for work items: the Discussion tab was previously write-only.
