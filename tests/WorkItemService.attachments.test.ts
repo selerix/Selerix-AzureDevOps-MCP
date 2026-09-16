@@ -465,6 +465,48 @@ describe('WorkItemService attachment methods', () => {
           .filter((name) => name.startsWith(path.basename(tempFilePath)) && name.endsWith('.tmp'));
         expect(leftoverTempFiles).toEqual([]);
       });
+
+      it('cleans up the temp file when the download succeeds but the rename fails', async () => {
+        const originalBytes = Buffer.alloc(1024, 9);
+        mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from([originalBytes]));
+
+        const renameSpy = jest.spyOn(fs.promises, 'rename').mockRejectedValueOnce(new Error('rename failed'));
+
+        try {
+          await expect(
+            service.getWorkItemAttachment({ id: 'abc-123', fileName: 'shot.png', savePath: tempFilePath })
+          ).rejects.toThrow('rename failed');
+
+          const leftoverTempFiles = fs
+            .readdirSync(path.dirname(tempFilePath))
+            .filter((name) => name.startsWith(path.basename(tempFilePath)) && name.endsWith('.tmp'));
+          expect(leftoverTempFiles).toEqual([]);
+        } finally {
+          renameSpy.mockRestore();
+        }
+      });
+
+      it('uses a collision-resistant temp name, not a predictable pid/timestamp one', async () => {
+        const originalBytes = Buffer.alloc(64, 3);
+        mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from([originalBytes]));
+
+        // fs.createWriteStream isn't spy-able directly (non-configurable export under this
+        // Jest/ts-jest setup), so observe the temp path via the rename call that immediately
+        // follows a successful write - it's the same path createWriteStream was opened with.
+        const renameSpy = jest.spyOn(fs.promises, 'rename');
+
+        try {
+          await service.getWorkItemAttachment({ id: 'abc-123', fileName: 'shot.png', savePath: tempFilePath });
+
+          expect(renameSpy).toHaveBeenCalledTimes(1);
+          const [tempPath] = renameSpy.mock.calls[0];
+          expect(tempPath).toMatch(
+            /\.download-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/
+          );
+        } finally {
+          renameSpy.mockRestore();
+        }
+      });
     });
 
     it('propagates errors from the Azure DevOps API', async () => {
