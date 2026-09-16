@@ -15,7 +15,10 @@ import { AIAssistedDevelopmentTools } from './Tools/AIAssistedDevelopmentTools';
 import { z } from 'zod';
 import { EntraAuthHandler } from './Services/EntraAuthHandler';
 
-const isoDateString = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
+// Uses the string-instance-method form (not z.iso.*), which works under both Zod 3.25+
+// and Zod 4 — @modelcontextprotocol/sdk permits either, and this package doesn't pin zod
+// itself, so a consumer install can resolve to Zod 3.
+const isoDateString = z.union([z.string().date(), z.string().datetime({ offset: true })]);
 
 async function main() {
   try {
