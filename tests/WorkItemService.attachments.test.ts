@@ -5,6 +5,7 @@ import { WorkItemExpand } from 'azure-devops-node-api/interfaces/WorkItemTrackin
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { Readable } from 'stream';
 
 function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -25,14 +26,15 @@ const testConfig: AzureDevOpsConfig = {
 
 describe('WorkItemService attachment methods', () => {
   let service: WorkItemService;
-  let mockWitApi: { createAttachment: jest.Mock; updateWorkItem: jest.Mock; getWorkItem: jest.Mock };
+  let mockWitApi: { createAttachment: jest.Mock; updateWorkItem: jest.Mock; getWorkItem: jest.Mock; getAttachmentContent: jest.Mock };
 
   beforeEach(() => {
     service = new WorkItemService(testConfig);
     mockWitApi = {
       createAttachment: jest.fn(),
       updateWorkItem: jest.fn(),
-      getWorkItem: jest.fn()
+      getWorkItem: jest.fn(),
+      getAttachmentContent: jest.fn()
     };
     // Bypass the real Azure DevOps connection entirely; every other method on
     // AzureDevOpsService goes through this same seam, so mocking it here exercises
@@ -363,6 +365,156 @@ describe('WorkItemService attachment methods', () => {
       mockWitApi.getWorkItem.mockRejectedValue(new Error('work item not found'));
 
       await expect(service.listWorkItemAttachments({ id: 404 })).rejects.toThrow('work item not found');
+    });
+  });
+
+  describe('getWorkItemAttachment', () => {
+    it('fetches content by id/fileName/project and returns it inline as base64 when small', async () => {
+      const originalBytes = Buffer.from('small screenshot bytes');
+      mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from([originalBytes]));
+
+      const result = await service.getWorkItemAttachment({ id: 'abc-123', fileName: 'shot.png' });
+
+      expect(mockWitApi.getAttachmentContent).toHaveBeenCalledWith('abc-123', 'shot.png', 'Engineering');
+      expect(result).toEqual({
+        fileName: 'shot.png',
+        base64Content: originalBytes.toString('base64'),
+        size: originalBytes.length
+      });
+    });
+
+    it('rejects content over the 1KB decoded limit instead of returning an expensive inline payload', async () => {
+      const oversizedBytes = Buffer.alloc(2048, 1);
+      mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from([oversizedBytes]));
+
+      await expect(service.getWorkItemAttachment({ id: 'abc-123' })).rejects.toThrow(
+        /too large to return inline/
+      );
+    });
+
+    it('aborts as soon as the limit is exceeded instead of buffering the whole stream first', async () => {
+      // A large number of 600-byte chunks (well past what Readable's internal read-ahead
+      // buffer would ever pull regardless of consumer speed). If bufferWithLimit only checked
+      // the size after fully draining the stream (the old behavior), every chunk would be
+      // requested; aborting mid-stream means the source is never driven to completion.
+      const TOTAL_CHUNKS = 1000;
+      let chunksRequested = 0;
+      async function* chunks() {
+        for (let i = 0; i < TOTAL_CHUNKS; i++) {
+          chunksRequested++;
+          yield Buffer.alloc(600, i % 256);
+        }
+      }
+      mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from(chunks()));
+
+      await expect(service.getWorkItemAttachment({ id: 'abc-123' })).rejects.toThrow(
+        /too large to return inline/
+      );
+      expect(chunksRequested).toBeLessThan(TOTAL_CHUNKS);
+    });
+
+    describe('with savePath', () => {
+      let tempFilePath: string;
+
+      beforeEach(() => {
+        tempFilePath = path.join(os.tmpdir(), `work-item-service-attachment-test-${process.hrtime.bigint()}.png`);
+      });
+
+      afterEach(() => {
+        fs.rmSync(tempFilePath, { force: true });
+      });
+
+      it('streams the content directly to disk instead of returning it inline, even when large', async () => {
+        const originalBytes = Buffer.alloc(4096, 7);
+        mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from([originalBytes]));
+
+        const result = await service.getWorkItemAttachment({
+          id: 'abc-123',
+          fileName: 'shot.png',
+          savePath: tempFilePath
+        });
+
+        expect(result).toEqual({
+          fileName: 'shot.png',
+          savePath: tempFilePath,
+          size: originalBytes.length
+        });
+        expect(fs.readFileSync(tempFilePath).equals(originalBytes)).toBe(true);
+      });
+
+      it('leaves an existing destination file untouched when the download fails partway through', async () => {
+        const preExistingBytes = Buffer.from('pre-existing file content, must survive a failed download');
+        fs.writeFileSync(tempFilePath, preExistingBytes);
+
+        async function* chunks() {
+          yield Buffer.from('partial data that should never land at savePath');
+          throw new Error('network blip');
+        }
+        mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from(chunks()));
+
+        await expect(
+          service.getWorkItemAttachment({ id: 'abc-123', fileName: 'shot.png', savePath: tempFilePath })
+        ).rejects.toThrow('network blip');
+
+        // The pre-existing file must not have been truncated/overwritten by the failed attempt.
+        expect(fs.readFileSync(tempFilePath).equals(preExistingBytes)).toBe(true);
+
+        // No leftover .tmp sibling file from the failed download attempt.
+        const leftoverTempFiles = fs
+          .readdirSync(path.dirname(tempFilePath))
+          .filter((name) => name.startsWith(path.basename(tempFilePath)) && name.endsWith('.tmp'));
+        expect(leftoverTempFiles).toEqual([]);
+      });
+
+      it('cleans up the temp file when the download succeeds but the rename fails', async () => {
+        const originalBytes = Buffer.alloc(1024, 9);
+        mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from([originalBytes]));
+
+        const renameSpy = jest.spyOn(fs.promises, 'rename').mockRejectedValueOnce(new Error('rename failed'));
+
+        try {
+          await expect(
+            service.getWorkItemAttachment({ id: 'abc-123', fileName: 'shot.png', savePath: tempFilePath })
+          ).rejects.toThrow('rename failed');
+
+          const leftoverTempFiles = fs
+            .readdirSync(path.dirname(tempFilePath))
+            .filter((name) => name.startsWith(path.basename(tempFilePath)) && name.endsWith('.tmp'));
+          expect(leftoverTempFiles).toEqual([]);
+        } finally {
+          renameSpy.mockRestore();
+        }
+      });
+
+      it('uses a collision-resistant temp name, not a predictable pid/timestamp one', async () => {
+        const originalBytes = Buffer.alloc(64, 3);
+        mockWitApi.getAttachmentContent.mockResolvedValue(Readable.from([originalBytes]));
+
+        // fs.createWriteStream isn't spy-able directly (non-configurable export under this
+        // Jest/ts-jest setup), so observe the temp path via the rename call that immediately
+        // follows a successful write - it's the same path createWriteStream was opened with.
+        const renameSpy = jest.spyOn(fs.promises, 'rename');
+
+        try {
+          await service.getWorkItemAttachment({ id: 'abc-123', fileName: 'shot.png', savePath: tempFilePath });
+
+          expect(renameSpy).toHaveBeenCalledTimes(1);
+          const [tempPath] = renameSpy.mock.calls[0];
+          expect(tempPath).toMatch(
+            /\.download-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/
+          );
+        } finally {
+          renameSpy.mockRestore();
+        }
+      });
+    });
+
+    it('propagates errors from the Azure DevOps API', async () => {
+      mockWitApi.getAttachmentContent.mockRejectedValue(new Error('attachment not found'));
+
+      await expect(service.getWorkItemAttachment({ id: 'missing' })).rejects.toThrow(
+        'attachment not found'
+      );
     });
   });
 });

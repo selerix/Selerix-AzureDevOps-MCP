@@ -2,6 +2,8 @@ import * as azdev from 'azure-devops-node-api';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
+import { randomUUID } from 'crypto';
 import { WorkItemTrackingApi } from 'azure-devops-node-api/WorkItemTrackingApi';
 import {
   JsonPatchOperation,
@@ -33,7 +35,9 @@ import {
   BulkWorkItemParams,
   UploadAttachmentParams,
   AddWorkItemAttachmentParams,
-  WorkItemAttachmentInfo
+  WorkItemAttachmentInfo,
+  GetWorkItemAttachmentParams,
+  WorkItemAttachmentContent
 } from '../Interfaces/WorkItems';
 
 // Above this decoded size, base64Content is rejected outright rather than accepted: inlining
@@ -666,6 +670,75 @@ export class WorkItemService extends AzureDevOpsService {
       console.error(`Error listing attachments for work item ${params.id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Download an attachment's actual content, given the GUID `id` returned by
+   * listWorkItemAttachments (listing only ever returns metadata, never the bytes).
+   *
+   * Prefer `savePath` over the inline default whenever the content isn't trivially small: the
+   * server streams it straight to disk instead of it having to come back as a response value.
+   * Without `savePath`, content is buffered and returned as `base64Content`, but rejected above
+   * the same 1 KB decoded limit uploadAttachment enforces (MAX_BASE64_ATTACHMENT_BYTES) -
+   * returning larger content inline would have to be regenerated token-by-token in the response.
+   */
+  public async getWorkItemAttachment(params: GetWorkItemAttachmentParams): Promise<WorkItemAttachmentContent> {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+      const contentStream = await witApi.getAttachmentContent(
+        params.id,
+        params.fileName,
+        this.config.project
+      );
+
+      if (params.savePath) {
+        // Write to a temporary sibling first and rename into place only once the download has
+        // fully succeeded. createWriteStream truncates the destination immediately, and a
+        // transient network/Azure error (or a failed rename) partway through would otherwise
+        // destroy any existing file at savePath, leave a partial one behind, or - without a
+        // collision-resistant name opened exclusively ('wx') - let two concurrent downloads to
+        // the same savePath clobber each other's temp file.
+        const tempPath = `${params.savePath}.download-${randomUUID()}.tmp`;
+        try {
+          await pipeline(contentStream, fs.createWriteStream(tempPath, { flags: 'wx' }));
+          await fs.promises.rename(tempPath, params.savePath);
+        } catch (error) {
+          await fs.promises.rm(tempPath, { force: true });
+          throw error;
+        }
+        const { size } = fs.statSync(params.savePath);
+        return { fileName: params.fileName, savePath: params.savePath, size };
+      }
+
+      const buffer = await this.bufferWithLimit(contentStream, MAX_BASE64_ATTACHMENT_BYTES);
+      return { fileName: params.fileName, base64Content: buffer.toString('base64'), size: buffer.length };
+    } catch (error) {
+      console.error(`Error getting attachment content for ${params.id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Buffers a stream, but aborts and destroys it as soon as its content exceeds `limitBytes`,
+   * instead of buffering the entire thing before checking - a large attachment would otherwise
+   * be fully allocated on the server heap before being rejected.
+   */
+  private async bufferWithLimit(stream: NodeJS.ReadableStream, limitBytes: number): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buf.length;
+      if (total > limitBytes) {
+        (stream as Readable).destroy();
+        throw new Error(
+          `Attachment content is too large to return inline (over ${limitBytes / 1024} KB decoded, ` +
+          `limit is ${limitBytes / 1024} KB). Provide savePath to write it directly to disk instead.`
+        );
+      }
+      chunks.push(buf);
+    }
+    return Buffer.concat(chunks);
   }
 
   /**

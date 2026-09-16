@@ -155,4 +155,30 @@ export interface WorkItemAttachmentInfo {
   name?: string;
   comment?: string;
   resourceSize?: number;
-} 
+}
+
+/**
+ * Interface for downloading an attachment's actual content, as opposed to just its metadata
+ * (listWorkItemAttachments). `id` is the attachment GUID returned by listWorkItemAttachments.
+ *
+ * - `savePath`: write the content directly to this path on disk (same machine as this MCP
+ *   server) instead of returning it inline. Use this for anything beyond a trivial size.
+ * - If `savePath` is omitted, content is returned inline as `base64Content`, but rejected
+ *   outright above the same 1 KB decoded limit as uploads (see MAX_BASE64_ATTACHMENT_BYTES) -
+ *   returning larger content inline would have to be regenerated token-by-token in the response.
+ */
+export interface GetWorkItemAttachmentParams {
+  id: string;
+  fileName?: string;
+  savePath?: string;
+}
+
+/**
+ * Interface for the result of downloading an attachment's content.
+ */
+export interface WorkItemAttachmentContent {
+  fileName?: string;
+  savePath?: string;
+  base64Content?: string;
+  size: number;
+}

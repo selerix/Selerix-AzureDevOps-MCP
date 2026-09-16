@@ -32,6 +32,7 @@ The integration is organized into nine main tool categories:
 - Upload a file (by path on disk, or base64 as a fallback) as an attachment and get back its inline-embeddable URL
 - Upload a file and attach it to a work item (linked attachment)
 - List attachments linked to a work item
+- Download an attachment's actual content (to disk, or inline for small files)
 
 ### Boards & Sprints Tools
 - Get team boards

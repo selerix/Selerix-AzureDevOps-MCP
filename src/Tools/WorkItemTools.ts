@@ -17,7 +17,8 @@ import {
   CreateLinkParams,
   BulkWorkItemParams,
   UploadAttachmentParams,
-  AddWorkItemAttachmentParams
+  AddWorkItemAttachmentParams,
+  GetWorkItemAttachmentParams
 } from '../Interfaces/WorkItems';
 import getClassMethods from "../utils/getClassMethods";
 
@@ -220,6 +221,25 @@ export class WorkItemTools {
       return formatMcpResponse(attachments, `Found ${attachments.length} attachment(s) on work item ${params.id}`);
     } catch (error) {
       console.error('Error in listWorkItemAttachments tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Download the actual content of an attachment linked to a work item (e.g. to read what a
+   * screenshot in a bug's Repro Steps actually shows). Complements listWorkItemAttachments,
+   * which only returns metadata (name/URL/size), never the bytes.
+   */
+  public async getWorkItemAttachment(params: GetWorkItemAttachmentParams): Promise<McpResponse> {
+    try {
+      const result = await this.workItemService.getWorkItemAttachment(params);
+      const label = result.fileName || params.id;
+      const message = result.savePath
+        ? `Saved attachment ${label} (${result.size} bytes) to ${result.savePath}`
+        : `Attachment ${label} (${result.size} bytes) returned as base64Content`;
+      return formatMcpResponse(result, message);
+    } catch (error) {
+      console.error('Error in getWorkItemAttachment tool:', error);
       return formatErrorResponse(error);
     }
   }
