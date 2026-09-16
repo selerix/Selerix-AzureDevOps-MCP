@@ -14,7 +14,7 @@ This server provides a convenient API for interacting with Azure DevOps services
 
 ## Features
 
-The integration is organized into eight main tool categories:
+The integration is organized into nine main tool categories:
 
 ### Work Item Tools
 - List work items using WIQL queries
@@ -88,6 +88,15 @@ The integration is organized into eight main tool categories:
 - Record exploratory test results
 - Convert findings to work items
 - Get exploratory test statistics
+
+### Test Plans Tools
+- Create, list, get, update, and delete test plans
+- Create, list, get, update, and delete test suites
+- Add test cases to a test suite
+- List test cases contained in a test suite
+- Find which test suites contain a given test case
+- Remove test cases from a test suite
+- Delete a test case work item
 
 ### DevSecOps Tools
 - Run security scans
