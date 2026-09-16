@@ -15,6 +15,11 @@ import { AIAssistedDevelopmentTools } from './Tools/AIAssistedDevelopmentTools';
 import { z } from 'zod';
 import { EntraAuthHandler } from './Services/EntraAuthHandler';
 
+const isoDateString = z.string().refine(
+  (value) => !isNaN(Date.parse(value)),
+  { message: "Must be a valid ISO date string" }
+);
+
 async function main() {
   try {
     // Load configuration
@@ -1191,8 +1196,8 @@ async function main() {
         iteration: z.string().describe("Iteration path of the test plan"),
         areaPath: z.string().optional().describe("Area path of the test plan"),
         description: z.string().optional().describe("Description of the test plan"),
-        startDate: z.string().optional().describe("Start date of the test plan (ISO date string)"),
-        endDate: z.string().optional().describe("End date of the test plan (ISO date string)"),
+        startDate: isoDateString.optional().describe("Start date of the test plan (ISO date string)"),
+        endDate: isoDateString.optional().describe("End date of the test plan (ISO date string)"),
         state: z.string().optional().describe("State of the test plan")
       },
       async (params, extra) => {
@@ -1246,8 +1251,8 @@ async function main() {
         iteration: z.string().optional().describe("New iteration path of the test plan"),
         areaPath: z.string().optional().describe("New area path of the test plan"),
         description: z.string().optional().describe("New description of the test plan"),
-        startDate: z.string().optional().describe("New start date (ISO date string)"),
-        endDate: z.string().optional().describe("New end date (ISO date string)"),
+        startDate: isoDateString.optional().describe("New start date (ISO date string)"),
+        endDate: isoDateString.optional().describe("New end date (ISO date string)"),
         state: z.string().optional().describe("New state of the test plan"),
         revision: z.number().optional().describe("Current revision of the test plan")
       },
