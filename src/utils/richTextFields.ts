@@ -30,15 +30,43 @@ export const HTML_FORMAT_WORK_ITEM_FIELDS = [
   'Microsoft.VSTS.TCM.SystemInfo'
 ] as const;
 
-const HTML_TAG_PATTERN = /<\/?[a-z][a-z0-9]*[\s/>]/i;
+// Requires the tag to actually close with `>` (optionally self-closing with `/>`) - a bare
+// `<div ` or `<br/not-a-tag` with no closing `>` is not a tag Azure DevOps will recognize as HTML
+// either, so it must not report as looksLikeHtml.
+const HTML_TAG_PATTERN = /<\/?[a-z][a-z0-9]*(?:\s[^<>]*)?\/?>/i;
 
 /**
- * True if `value` already contains a recognizable HTML tag, i.e. Azure DevOps will treat it as
- * already-HTML and store it unchanged rather than running it through its own HTML-encode pass.
+ * True if `value` already contains a recognizable, properly-closed HTML tag, i.e. Azure DevOps
+ * will treat it as already-HTML and store it unchanged rather than running it through its own
+ * HTML-encode pass.
  */
 export function looksLikeHtml(value: string): boolean {
   return HTML_TAG_PATTERN.test(value);
 }
+
+/**
+ * Shared warning text for any MCP tool description that accepts a value for one of
+ * HTML_FORMAT_WORK_ITEM_FIELDS, so every registration (createWorkItem, updateWorkItem,
+ * bulkCreateWorkItems, ...) stays in sync. Self-contained - MCP clients (including remote ones)
+ * cannot read this repository's TOOL_REGISTRATION.md, so the workaround itself has to travel in
+ * the tool description, not just a pointer to it.
+ */
+export const HTML_FORMAT_FIELD_WARNING =
+  'Warning: for HTML-format fields (description, Microsoft.VSTS.TCM.Steps, ' +
+  'Microsoft.VSTS.Common.AcceptanceCriteria, Microsoft.VSTS.TCM.ReproSteps, ...), Azure DevOps ' +
+  'itself HTML-encodes plain text containing &, <, or > on save, which for an XML-wrapped field ' +
+  'like Microsoft.VSTS.TCM.Steps produces a confusing extra layer of escaping on read-back (a ' +
+  'literal > can come back as &amp;gt;). Fix: only plain text with none of those three characters ' +
+  'is safe to send as-is; text that needs them must instead be sent already wrapped as real HTML, ' +
+  'e.g. `<div><p>Go to Case Setup &gt; Benefit Plans</p></div>` for a flat field like description, ' +
+  'or that same HTML XML-escaped a second time ' +
+  '(`&lt;div&gt;&lt;p&gt;Go to Case Setup &amp;gt; Benefit Plans&lt;/p&gt;&lt;/div&gt;`) as the ' +
+  'text of a <parameterizedString> element for Microsoft.VSTS.TCM.Steps. See TOOL_REGISTRATION.md ' +
+  'for the full writeup if you have repository access.';
+
+/** Shorter per-parameter pointer back to HTML_FORMAT_FIELD_WARNING on the same tool. */
+export const HTML_FORMAT_FIELD_PARAM_NOTE =
+  "HTML-format field: see this tool's description for the &/</> gotcha.";
 
 /**
  * Escapes text for safe use as an XML text node - e.g. inside a <parameterizedString> element of

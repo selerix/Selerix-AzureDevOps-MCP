@@ -28,6 +28,16 @@ describe('looksLikeHtml', () => {
   it('returns true for a self-closing tag with attributes (e.g. <img src="x"/>)', () => {
     expect(looksLikeHtml('<img src="x"/>')).toBe(true);
   });
+
+  it('returns false for an unterminated tag-like fragment with no closing >', () => {
+    expect(looksLikeHtml('plain <br/not-a-tag')).toBe(false);
+    expect(looksLikeHtml('unterminated <div ')).toBe(false);
+  });
+
+  it('returns true for a self-closing tag followed by unrelated text after a real >', () => {
+    expect(looksLikeHtml('line one<br/>line two')).toBe(true);
+    expect(looksLikeHtml('<div class="a">text</div>')).toBe(true);
+  });
 });
 
 describe('escapeXmlText', () => {
