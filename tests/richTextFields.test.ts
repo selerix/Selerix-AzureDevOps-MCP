@@ -20,6 +20,14 @@ describe('looksLikeHtml', () => {
   it('returns true for text containing a recognizable HTML tag', () => {
     expect(looksLikeHtml('<div><p>Go to Case Setup &gt; Benefit Plans</p></div>')).toBe(true);
   });
+
+  it('returns true for a self-closing tag with no attributes (e.g. <br/>)', () => {
+    expect(looksLikeHtml('line one<br/>line two')).toBe(true);
+  });
+
+  it('returns true for a self-closing tag with attributes (e.g. <img src="x"/>)', () => {
+    expect(looksLikeHtml('<img src="x"/>')).toBe(true);
+  });
 });
 
 describe('escapeXmlText', () => {
@@ -44,6 +52,24 @@ describe('wrapPlainTextAsHtml', () => {
   it('turns single newlines within a block into <br>', () => {
     expect(wrapPlainTextAsHtml('line one\nline two')).toBe(
       '<div><p>line one<br>line two</p></div>'
+    );
+  });
+
+  it('normalizes CRLF line endings before splitting into paragraphs', () => {
+    expect(wrapPlainTextAsHtml('first step\r\n\r\nsecond step')).toBe(
+      '<div><p>first step</p><p>second step</p></div>'
+    );
+  });
+
+  it('normalizes CRLF line endings before converting to <br>', () => {
+    expect(wrapPlainTextAsHtml('line one\r\nline two')).toBe(
+      '<div><p>line one<br>line two</p></div>'
+    );
+  });
+
+  it('normalizes lone CR (old Mac) line endings', () => {
+    expect(wrapPlainTextAsHtml('first step\r\rsecond step')).toBe(
+      '<div><p>first step</p><p>second step</p></div>'
     );
   });
 

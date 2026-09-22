@@ -128,7 +128,7 @@ async function main() {
     );
     
     allowedTools.has("createWorkItem") && server.tool("createWorkItem",
-      "Create a new work item. Warning: for HTML-format fields (description, Microsoft.VSTS.TCM.Steps, Microsoft.VSTS.Common.AcceptanceCriteria, Microsoft.VSTS.TCM.ReproSteps, ...), plain text containing &, <, or > gets HTML-encoded by Azure DevOps itself on save - see TOOL_REGISTRATION.md for how to avoid corruption on read-back.",
+      "Create a new work item. Warning: for HTML-format fields (description, Microsoft.VSTS.TCM.Steps, Microsoft.VSTS.Common.AcceptanceCriteria, Microsoft.VSTS.TCM.ReproSteps, ...), Azure DevOps itself HTML-encodes plain text containing &, <, or > on save, which for an XML-wrapped field like Microsoft.VSTS.TCM.Steps produces a confusing extra layer of escaping on read-back (a literal > can come back as &amp;gt;). Fix: only plain text with none of those three characters is safe to send as-is; text that needs them must instead be sent already wrapped as real HTML, e.g. `<div><p>Go to Case Setup &gt; Benefit Plans</p></div>` for a flat field like description, or that same HTML XML-escaped a second time (`&lt;div&gt;&lt;p&gt;Go to Case Setup &amp;gt; Benefit Plans&lt;/p&gt;&lt;/div&gt;`) as the text of a <parameterizedString> element for Microsoft.VSTS.TCM.Steps. See TOOL_REGISTRATION.md for the full writeup if you have repository access.",
       {
         workItemType: z.string().describe("Type of work item to create"),
         title: z.string().describe("Title of the work item"),
@@ -150,7 +150,7 @@ async function main() {
     );
     
     allowedTools.has("updateWorkItem") && server.tool("updateWorkItem",
-      "Update an existing work item. Warning: for HTML-format fields (description, Microsoft.VSTS.TCM.Steps, Microsoft.VSTS.Common.AcceptanceCriteria, Microsoft.VSTS.TCM.ReproSteps, ...), plain text containing &, <, or > gets HTML-encoded by Azure DevOps itself on save - see TOOL_REGISTRATION.md for how to avoid corruption on read-back.",
+      "Update an existing work item. Warning: for HTML-format fields (description, Microsoft.VSTS.TCM.Steps, Microsoft.VSTS.Common.AcceptanceCriteria, Microsoft.VSTS.TCM.ReproSteps, ...), Azure DevOps itself HTML-encodes plain text containing &, <, or > on save, which for an XML-wrapped field like Microsoft.VSTS.TCM.Steps produces a confusing extra layer of escaping on read-back (a literal > can come back as &amp;gt;). Fix: only plain text with none of those three characters is safe to send as-is; text that needs them must instead be sent already wrapped as real HTML, e.g. `<div><p>Go to Case Setup &gt; Benefit Plans</p></div>` for a flat field like description, or that same HTML XML-escaped a second time (`&lt;div&gt;&lt;p&gt;Go to Case Setup &amp;gt; Benefit Plans&lt;/p&gt;&lt;/div&gt;`) as the text of a <parameterizedString> element for Microsoft.VSTS.TCM.Steps. See TOOL_REGISTRATION.md for the full writeup if you have repository access.",
       {
         id: z.number().describe("ID of the work item to update"),
         fields: z.record(z.string(), z.any()).describe("Fields to update on the work item. If setting an HTML-format field (e.g. Microsoft.VSTS.TCM.Steps), see this tool's description for the &/</> gotcha.")

@@ -30,7 +30,7 @@ export const HTML_FORMAT_WORK_ITEM_FIELDS = [
   'Microsoft.VSTS.TCM.SystemInfo'
 ] as const;
 
-const HTML_TAG_PATTERN = /<\/?[a-z][a-z0-9]*[\s>]/i;
+const HTML_TAG_PATTERN = /<\/?[a-z][a-z0-9]*[\s/>]/i;
 
 /**
  * True if `value` already contains a recognizable HTML tag, i.e. Azure DevOps will treat it as
@@ -61,7 +61,8 @@ export function escapeXmlText(value: string): string {
  * become `<br>`.
  */
 export function wrapPlainTextAsHtml(text: string): string {
-  const encoded = escapeXmlText(text);
+  const normalized = text.replace(/\r\n?/g, '\n');
+  const encoded = escapeXmlText(normalized);
 
   const paragraphs = encoded
     .split(/\n{2,}/)
