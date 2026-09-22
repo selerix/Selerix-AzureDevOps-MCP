@@ -14,6 +14,7 @@ import { ArtifactManagementTools } from './Tools/ArtifactManagementTools';
 import { AIAssistedDevelopmentTools } from './Tools/AIAssistedDevelopmentTools';
 import { z } from 'zod';
 import { EntraAuthHandler } from './Services/EntraAuthHandler';
+import { HTML_FORMAT_FIELD_WARNING, HTML_FORMAT_FIELD_PARAM_NOTE } from './utils/richTextFields';
 
 // Uses the string-instance-method form (not z.iso.*), which works under both Zod 3.25+
 // and Zod 4 — @modelcontextprotocol/sdk permits either, and this package doesn't pin zod
@@ -127,17 +128,17 @@ async function main() {
       }
     );
     
-    allowedTools.has("createWorkItem") && server.tool("createWorkItem", 
-      "Create a new work item",
+    allowedTools.has("createWorkItem") && server.tool("createWorkItem",
+      `Create a new work item. ${HTML_FORMAT_FIELD_WARNING}`,
       {
         workItemType: z.string().describe("Type of work item to create"),
         title: z.string().describe("Title of the work item"),
-        description: z.string().optional().describe("Description of the work item"),
+        description: z.string().optional().describe(`Description of the work item. ${HTML_FORMAT_FIELD_PARAM_NOTE}`),
         assignedTo: z.string().optional().describe("User to assign the work item to"),
         state: z.string().optional().describe("Initial state of the work item"),
         areaPath: z.string().optional().describe("Area path for the work item"),
         iterationPath: z.string().optional().describe("Iteration path for the work item"),
-        additionalFields: z.record(z.string(), z.any()).optional().describe("Additional fields to set on the work item")
+        additionalFields: z.record(z.string(), z.any()).optional().describe(`Additional fields to set on the work item. If setting an HTML-format field (e.g. Microsoft.VSTS.TCM.Steps), see this tool's description for the &/</> gotcha.`)
       },
       async (params, extra) => {
         const result = await workItemTools.createWorkItem(params);
@@ -149,11 +150,11 @@ async function main() {
       }
     );
     
-    allowedTools.has("updateWorkItem") && server.tool("updateWorkItem", 
-      "Update an existing work item",
+    allowedTools.has("updateWorkItem") && server.tool("updateWorkItem",
+      `Update an existing work item. ${HTML_FORMAT_FIELD_WARNING}`,
       {
         id: z.number().describe("ID of the work item to update"),
-        fields: z.record(z.string(), z.any()).describe("Fields to update on the work item")
+        fields: z.record(z.string(), z.any()).describe(`Fields to update on the work item. If setting an HTML-format field (e.g. Microsoft.VSTS.TCM.Steps), see this tool's description for the &/</> gotcha.`)
       },
       async (params, extra) => {
         const result = await workItemTools.updateWorkItem(params);
@@ -283,23 +284,23 @@ async function main() {
       }
     );
     
-    allowedTools.has("bulkCreateWorkItems") && server.tool("bulkCreateWorkItems", 
-      "Create or update multiple work items in a single operation",
+    allowedTools.has("bulkCreateWorkItems") && server.tool("bulkCreateWorkItems",
+      `Create or update multiple work items in a single operation. ${HTML_FORMAT_FIELD_WARNING}`,
       {
         workItems: z.array(z.union([
           z.object({
             workItemType: z.string().describe("Type of work item to create"),
             title: z.string().describe("Title of the work item"),
-            description: z.string().optional().describe("Description of the work item"),
+            description: z.string().optional().describe(`Description of the work item. ${HTML_FORMAT_FIELD_PARAM_NOTE}`),
             assignedTo: z.string().optional().describe("User to assign the work item to"),
             state: z.string().optional().describe("Initial state of the work item"),
             areaPath: z.string().optional().describe("Area path for the work item"),
             iterationPath: z.string().optional().describe("Iteration path for the work item"),
-            additionalFields: z.record(z.string(), z.any()).optional().describe("Additional fields to set on the work item")
+            additionalFields: z.record(z.string(), z.any()).optional().describe(`Additional fields to set on the work item. If setting an HTML-format field (e.g. Microsoft.VSTS.TCM.Steps), see this tool's description for the &/</> gotcha.`)
           }),
           z.object({
             id: z.number().describe("ID of work item to update"),
-            fields: z.record(z.string(), z.any()).describe("Fields to update on the work item")
+            fields: z.record(z.string(), z.any()).describe(`Fields to update on the work item. If setting an HTML-format field (e.g. Microsoft.VSTS.TCM.Steps), see this tool's description for the &/</> gotcha.`)
           })
         ])).min(1).describe("Array of work items to create or update")
       },
