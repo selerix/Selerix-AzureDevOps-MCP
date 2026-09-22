@@ -127,17 +127,17 @@ async function main() {
       }
     );
     
-    allowedTools.has("createWorkItem") && server.tool("createWorkItem", 
-      "Create a new work item",
+    allowedTools.has("createWorkItem") && server.tool("createWorkItem",
+      "Create a new work item. Warning: for HTML-format fields (description, Microsoft.VSTS.TCM.Steps, Microsoft.VSTS.Common.AcceptanceCriteria, Microsoft.VSTS.TCM.ReproSteps, ...), plain text containing &, <, or > gets HTML-encoded by Azure DevOps itself on save - see TOOL_REGISTRATION.md for how to avoid corruption on read-back.",
       {
         workItemType: z.string().describe("Type of work item to create"),
         title: z.string().describe("Title of the work item"),
-        description: z.string().optional().describe("Description of the work item"),
+        description: z.string().optional().describe("Description of the work item. HTML-format field: see this tool's description for the &/</> gotcha."),
         assignedTo: z.string().optional().describe("User to assign the work item to"),
         state: z.string().optional().describe("Initial state of the work item"),
         areaPath: z.string().optional().describe("Area path for the work item"),
         iterationPath: z.string().optional().describe("Iteration path for the work item"),
-        additionalFields: z.record(z.string(), z.any()).optional().describe("Additional fields to set on the work item")
+        additionalFields: z.record(z.string(), z.any()).optional().describe("Additional fields to set on the work item. If setting an HTML-format field (e.g. Microsoft.VSTS.TCM.Steps), see this tool's description for the &/</> gotcha.")
       },
       async (params, extra) => {
         const result = await workItemTools.createWorkItem(params);
@@ -149,11 +149,11 @@ async function main() {
       }
     );
     
-    allowedTools.has("updateWorkItem") && server.tool("updateWorkItem", 
-      "Update an existing work item",
+    allowedTools.has("updateWorkItem") && server.tool("updateWorkItem",
+      "Update an existing work item. Warning: for HTML-format fields (description, Microsoft.VSTS.TCM.Steps, Microsoft.VSTS.Common.AcceptanceCriteria, Microsoft.VSTS.TCM.ReproSteps, ...), plain text containing &, <, or > gets HTML-encoded by Azure DevOps itself on save - see TOOL_REGISTRATION.md for how to avoid corruption on read-back.",
       {
         id: z.number().describe("ID of the work item to update"),
-        fields: z.record(z.string(), z.any()).describe("Fields to update on the work item")
+        fields: z.record(z.string(), z.any()).describe("Fields to update on the work item. If setting an HTML-format field (e.g. Microsoft.VSTS.TCM.Steps), see this tool's description for the &/</> gotcha.")
       },
       async (params, extra) => {
         const result = await workItemTools.updateWorkItem(params);

@@ -66,6 +66,16 @@ zod schema, mirror the parameter types in the matching `src/Interfaces/<Domain>.
 in particular use `z.enum([...])` (not `z.string()`) for any field that's a TS union/enum there, or
 the build breaks.
 
+### HTML-format fields (`Microsoft.VSTS.TCM.Steps`, `System.Description`, ...)
+
+`createWorkItem`/`updateWorkItem` pass field values straight through with zero escaping (verified
+down to `typed-rest-client`'s plain `JSON.stringify`). Azure DevOps itself, however, treats a fixed
+set of fields as HTML server-side and auto-HTML-encodes plain text written to them, which for an
+XML-wrapped field like `Microsoft.VSTS.TCM.Steps` produces a confusing extra layer of escaping on
+read-back (`>` sent as either a literal char or `&gt;` comes back as `&amp;gt;`). This is Azure
+DevOps behavior, not something fixable in this codebase — see the "Gotcha" section in
+`TOOL_REGISTRATION.md` and the helpers in `src/utils/richTextFields.ts` for the workaround.
+
 ### `ALLOWED_TOOLS` / tool-method arrays
 
 Each `Tools/*.ts` file ends with an exported `<Domain>ToolMethods` array, built by
