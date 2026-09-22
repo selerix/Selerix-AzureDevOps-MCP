@@ -7,6 +7,27 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-09-22
+
+Azure DevOps auto-HTML-encodes plain text written to a handful of fields it treats as HTML
+server-side (`Microsoft.VSTS.TCM.Steps`, `System.Description`, `Microsoft.VSTS.Common.AcceptanceCriteria`,
+`Microsoft.VSTS.TCM.ReproSteps`, `Microsoft.VSTS.TCM.SystemInfo`) — for an XML-wrapped field like
+`Microsoft.VSTS.TCM.Steps` that produces a confusing extra layer of escaping on read-back (a
+literal `>` comes back as `&amp;gt;`). Confirmed live against a real org that this is genuine Azure
+DevOps server-side behavior, not something fixable in this server: `createWorkItem`/`updateWorkItem`
+and their dependencies (`azure-devops-node-api`, `typed-rest-client`) pass field values through
+with zero escaping of any kind.
+
+### Added
+
+- **`src/utils/richTextFields.ts`** — `HTML_FORMAT_WORK_ITEM_FIELDS`, `looksLikeHtml`,
+  `escapeXmlText`, and `wrapPlainTextAsHtml` helpers for building the one input shape
+  (already-HTML content) that survives Azure DevOps's auto-encoding untouched.
+- Warnings on `createWorkItem`, `updateWorkItem`, and `bulkCreateWorkItems`'s tool descriptions and
+  affected field parameters (self-contained, since remote MCP clients can't read this repo's docs),
+  so MCP clients — including AI agents — see the gotcha and the fix before hitting it.
+- A "Gotcha" section in `TOOL_REGISTRATION.md` with the full writeup and usage examples.
+
 ## [1.3.1] - 2026-09-16
 
 `listWorkItemAttachments` only ever returned metadata (name/URL/size) - there was no way to read
