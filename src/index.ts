@@ -12,6 +12,7 @@ import { TestPlansTools } from './Tools/TestPlansTools';
 import { DevSecOpsTools } from './Tools/DevSecOpsTools';
 import { ArtifactManagementTools } from './Tools/ArtifactManagementTools';
 import { AIAssistedDevelopmentTools } from './Tools/AIAssistedDevelopmentTools';
+import { PipelinesTools } from './Tools/PipelinesTools';
 import { z } from 'zod';
 import { EntraAuthHandler } from './Services/EntraAuthHandler';
 import { HTML_FORMAT_FIELD_WARNING, HTML_FORMAT_FIELD_PARAM_NOTE } from './utils/richTextFields';
@@ -41,6 +42,7 @@ async function main() {
     const devSecOpsTools = new DevSecOpsTools(azureDevOpsConfig);
     const artifactManagementTools = new ArtifactManagementTools(azureDevOpsConfig);
     const aiAssistedDevelopmentTools = new AIAssistedDevelopmentTools(azureDevOpsConfig);
+    const pipelinesTools = new PipelinesTools(azureDevOpsConfig);
 
     // Create MCP server
     const server = new McpServer({
@@ -2092,6 +2094,183 @@ async function main() {
         return {
           content: result.content,
           rawData: result.rawData,
+        };
+      }
+    );
+
+    // Register Pipelines Tools
+    allowedTools.has("listPipelines") && server.tool("listPipelines",
+      "List build pipelines (definitions) in the project, optionally filtered by name or folder path",
+      {
+        nameFilter: z.string().optional().describe("Filter to pipelines whose names match this pattern"),
+        path: z.string().optional().describe("Filter to pipelines under this folder path"),
+        top: z.number().optional().describe("Maximum number of pipelines to return")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.listPipelines(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getPipelineDetails") && server.tool("getPipelineDetails",
+      "Get full details of a pipeline, including its variables, repository, and triggers",
+      {
+        pipelineId: z.number().describe("ID of the pipeline (build definition)")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.getPipelineDetails(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("updatePipelineVariables") && server.tool("updatePipelineVariables",
+      "Add, edit, or remove variables persisted on a pipeline definition (the 'Variables' panel in the ADO UI)",
+      {
+        pipelineId: z.number().describe("ID of the pipeline (build definition)"),
+        variables: z.record(z.string(), z.object({
+          value: z.string().optional().describe("New value for the variable"),
+          isSecret: z.boolean().optional().describe("Whether the variable's value is a secret"),
+          allowOverride: z.boolean().optional().describe("Whether the value can be overridden at queue time")
+        })).optional().describe("Variables to add or edit, keyed by variable name"),
+        removeVariables: z.array(z.string()).optional().describe("Names of variables to remove entirely")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.updatePipelineVariables(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("scheduleBuild") && server.tool("scheduleBuild",
+      "Queue a new run of a pipeline, optionally overriding queue-time-enabled variables (e.g. TestCaseFilter) for this run only",
+      {
+        pipelineId: z.number().describe("ID of the pipeline (build definition) to queue"),
+        variables: z.record(z.string(), z.string()).optional().describe("One-off variable overrides for this run only, e.g. { \"TestCaseFilter\": \"Priority=1\" }. Only takes effect for variables marked settable at queue time - check getPipelineDetails first."),
+        sourceBranch: z.string().optional().describe("Branch to build, e.g. 'refs/heads/main'")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.scheduleBuild(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("listBuilds") && server.tool("listBuilds",
+      "List past pipeline runs (builds), optionally filtered by pipeline, status, result, branch, or date range",
+      {
+        pipelineId: z.number().optional().describe("ID of the pipeline (build definition) to list runs for"),
+        top: z.number().optional().describe("Maximum number of builds to return"),
+        statusFilter: z.enum(['none', 'inProgress', 'completed', 'cancelling', 'postponed', 'notStarted', 'all']).optional().describe("Filter by build status"),
+        resultFilter: z.enum(['none', 'succeeded', 'partiallySucceeded', 'failed', 'canceled']).optional().describe("Filter by build result"),
+        branchName: z.string().optional().describe("Filter to builds of this branch"),
+        minTime: isoDateString.optional().describe("Only return builds queued after this date/time"),
+        maxTime: isoDateString.optional().describe("Only return builds queued before this date/time"),
+        queryOrder: z.enum(['finishTimeAscending', 'finishTimeDescending', 'queueTimeAscending', 'queueTimeDescending', 'startTimeAscending', 'startTimeDescending']).optional().describe("Sort order for results")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.listBuilds(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getBuildDetails") && server.tool("getBuildDetails",
+      "Get a single build's summary: status, result, timings, branch, and who requested it",
+      {
+        buildId: z.number().describe("ID of the build")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.getBuildDetails(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getBuildTestResults") && server.tool("getBuildTestResults",
+      "Get the pass/fail test results published by a build, including each test's automated test name and storage (assembly)",
+      {
+        buildId: z.number().describe("ID of the build"),
+        outcomeFilter: z.array(z.enum(['none', 'passed', 'failed', 'inconclusive', 'timeout', 'aborted', 'blocked', 'notExecuted', 'warning', 'error', 'notApplicable', 'paused', 'inProgress', 'notImpacted'])).optional().describe("Only return results with these outcomes"),
+        top: z.number().optional().describe("Maximum number of results to return")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.getBuildTestResults(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getBuildLogs") && server.tool("getBuildLogs",
+      "List a build's logs, fetch one log's text lines, or download one (or all, zipped) to a local file",
+      {
+        buildId: z.number().describe("ID of the build"),
+        logId: z.number().optional().describe("A specific log ID from a prior call without logId. Omit to list all logs, or (with savePath) to download all of them as a zip."),
+        savePath: z.string().optional().describe("Local file path to download the log(s) to, instead of returning text inline")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.getBuildLogs(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getBuildArtifacts") && server.tool("getBuildArtifacts",
+      "List a build's artifacts, or download one artifact's content zip to a local file",
+      {
+        buildId: z.number().describe("ID of the build"),
+        artifactName: z.string().optional().describe("A specific artifact name from a prior call without artifactName. Omit to list all artifacts."),
+        savePath: z.string().optional().describe("Local file path to download the named artifact's content zip to")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.getBuildArtifacts(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("associateAutomatedTestWithTestCase") && server.tool("associateAutomatedTestWithTestCase",
+      "Associate an automated test published by a pipeline run with a Test Case work item - the same effect as the Test Case's Associated Automation > Browse flow in the ADO UI",
+      {
+        testCaseId: z.number().describe("ID of the Test Case work item"),
+        buildId: z.number().describe("ID of the pipeline run (build) whose published test results contain the automated test"),
+        automatedTestName: z.string().describe("Fully-qualified automated test name as it appears in getBuildTestResults, e.g. 'MyNamespace.MyClass.MyTestMethod'"),
+        automatedTestType: z.string().optional().describe("Automated test type to record on the test case (defaults to 'Unit Test')")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.associateAutomatedTestWithTestCase(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
         };
       }
     );
