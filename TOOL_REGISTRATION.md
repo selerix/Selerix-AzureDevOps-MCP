@@ -51,7 +51,7 @@ server.tool("updateWorkItemState",
 
 ## Available Tool Instances
 
-The MCP server initializes nine main tool instances, each handling different aspects of Azure DevOps:
+The MCP server initializes ten main tool instances, each handling different aspects of Azure DevOps:
 
 1. `workItemTools` - For work item management operations
 2. `boardsSprintsTools` - For board and sprint management operations
@@ -62,6 +62,7 @@ The MCP server initializes nine main tool instances, each handling different asp
 7. `devSecOpsTools` - For DevSecOps operations
 8. `artifactManagementTools` - For artifact management operations
 9. `aiAssistedDevelopmentTools` - For AI-assisted development operations
+10. `pipelinesTools` - For pipeline/build scheduling, variables, results, and test-case automation association
 
 ## Parameter Types
 
@@ -227,5 +228,17 @@ Here's a list of all the tools mentioned in the README.md file:
 - `getPullRequestComments`
 - `approvePullRequest`
 - `mergePullRequest`
+
+### Pipelines Tools
+- `listPipelines`
+- `getPipelineDetails`
+- `updatePipelineVariables`
+- `scheduleBuild`
+- `listBuilds`
+- `getBuildDetails`
+- `getBuildTestResults`
+- `getBuildLogs`
+- `getBuildArtifacts`
+- `associateAutomatedTestWithTestCase`
 
 If you need to add more tools, make sure to implement them in the appropriate tools class first, and then register them in the `index.ts` file following the pattern shown above. 

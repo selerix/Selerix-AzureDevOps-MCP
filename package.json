@@ -45,7 +45,7 @@
   },
   "homepage": "https://github.com/selerix/Selerix-AzureDevOps-MCP#readme",
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://pkgs.dev.azure.com/selerix/_packaging/Selerix/npm/registry/"
   },
   "engines": {
     "node": ">=16.0.0"
