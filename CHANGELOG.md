@@ -7,6 +7,37 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-30
+
+Adds a `Pipelines` tool domain covering the Build/Pipelines workflow this server had no coverage
+for: scheduling builds, managing pipeline variables, and inspecting past runs, their test results,
+logs, and artifacts - plus a tool that reproduces the Test Case "Associated Automation" -> Browse
+flow from the Azure DevOps UI programmatically.
+
+### Added
+
+- **`listPipelines`**, **`getPipelineDetails`** - browse pipelines and fetch a pipeline's full
+  details, including its persisted variables.
+- **`updatePipelineVariables`** - add, edit, or remove variables persisted on a pipeline
+  definition. Correctly avoids overwriting a secret variable's real value with the redacted empty
+  string Azure DevOps returns for secrets on read, unless a caller explicitly supplies a new one.
+- **`scheduleBuild`** - queue a new run with one-off, queue-time-only variable overrides (e.g.
+  `TestCaseFilter`) that don't persist to the pipeline definition.
+- **`listBuilds`**, **`getBuildDetails`** - list past runs for a pipeline and fetch one run's
+  summary. Both follow pagination continuation tokens when no explicit `top` is given, instead of
+  silently truncating to one server page.
+- **`getBuildTestResults`** - a build's published pass/fail test results, including each result's
+  automated test name and storage.
+- **`getBuildLogs`**, **`getBuildArtifacts`** - list a build's logs/artifacts, or download one (or
+  all logs, zipped) to a local file.
+- **`associateAutomatedTestWithTestCase`** - associates an automated test published by a pipeline
+  run with a Test Case work item by matching its `automatedTestName` and patching the test case's
+  `Microsoft.VSTS.TCM.Automated*` fields, rejecting rather than guessing when a build publishes
+  multiple results for the same test name across different storages.
+- **`src/utils/downloadStreamToFile.ts`** - shared stream-to-temp-file-then-rename download
+  helper, now used by `getBuildLogs`, `getBuildArtifacts`, and `WorkItemService.getWorkItemAttachment`
+  in place of three separate copies of the same logic.
+
 ## [1.4.1] - 2026-09-22
 
 Azure DevOps auto-HTML-encodes plain text written to a handful of fields it treats as HTML
