@@ -7,6 +7,7 @@ import { ArtifactManagementToolMethods } from './Tools/ArtifactManagementTools';
 import { BoardsSprintsToolMethods } from './Tools/BoardsSprintsTools';
 import { DevSecOpsToolMethods } from './Tools/DevSecOpsTools';
 import { GitToolMethods } from './Tools/GitTools';
+import { PipelinesToolMethods } from './Tools/PipelinesTools';
 import { ProjectToolMethods } from './Tools/ProjectTools';
 import { TestingCapabilitiesToolMethods } from './Tools/TestingCapabilitiesTools';
 import { TestPlansToolMethods } from './Tools/TestPlansTools';
@@ -158,6 +159,7 @@ const ALL_ALLOWED_TOOLS = AIAssistedDevelopmentToolMethods
   .concat(BoardsSprintsToolMethods)
   .concat(DevSecOpsToolMethods)
   .concat(GitToolMethods)
+  .concat(PipelinesToolMethods)
   .concat(ProjectToolMethods)
   .concat(TestingCapabilitiesToolMethods)
   .concat(TestPlansToolMethods)

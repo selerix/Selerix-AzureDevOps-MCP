@@ -99,6 +99,16 @@ The integration is organized into nine main tool categories:
 - Remove test cases from a test suite
 - Delete a test case work item
 
+### Pipelines Tools
+- List pipelines and get a pipeline's full details (including variables)
+- Add, edit, or remove variables persisted on a pipeline definition
+- Schedule a new build with one-off queue-time variable overrides (e.g. `TestCaseFilter`)
+- List past builds for a pipeline, and get a single build's summary
+- Get a build's published test results (pass/fail, automated test name/storage)
+- List, fetch, or download a build's logs
+- List or download a build's artifacts
+- Associate an automated test from a pipeline run with a Test Case work item
+
 ### DevSecOps Tools
 - Run security scans
 - Get security scan results
