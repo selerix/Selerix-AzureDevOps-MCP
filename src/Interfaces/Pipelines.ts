@@ -86,8 +86,9 @@ export interface AssociateAutomatedTestWithTestCaseParams {
   /** The fully-qualified automated test name as it appears in getBuildTestResults, e.g. "MyNamespace.MyClass.MyTestMethod". */
   automatedTestName: string;
   /**
-   * Overrides the automated test type recorded on the test case. Defaults to the value reported
-   * on the matched test result, falling back to "Unit Test" if the result doesn't report one.
+   * The automated test type recorded on the test case (e.g. "Unit Test", "Coded UI Test").
+   * Azure DevOps' build-time test results don't report this, so it can't be inferred from the
+   * matched result - defaults to "Unit Test" when omitted.
    */
   automatedTestType?: string;
 }

@@ -2,8 +2,6 @@ import * as azdev from 'azure-devops-node-api';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Readable } from 'stream';
-import { pipeline } from 'stream/promises';
-import { randomUUID } from 'crypto';
 import { WorkItemTrackingApi } from 'azure-devops-node-api/WorkItemTrackingApi';
 import {
   JsonPatchOperation,
@@ -18,6 +16,7 @@ import {
 } from 'azure-devops-node-api/interfaces/WorkItemTrackingInterfaces';
 import { AzureDevOpsConfig } from '../Interfaces/AzureDevOps';
 import { AzureDevOpsService } from './AzureDevOpsService';
+import { downloadStreamToFile } from '../utils/downloadStreamToFile';
 import {
   WorkItemByIdParams,
   SearchWorkItemsParams,
@@ -692,22 +691,8 @@ export class WorkItemService extends AzureDevOpsService {
       );
 
       if (params.savePath) {
-        // Write to a temporary sibling first and rename into place only once the download has
-        // fully succeeded. createWriteStream truncates the destination immediately, and a
-        // transient network/Azure error (or a failed rename) partway through would otherwise
-        // destroy any existing file at savePath, leave a partial one behind, or - without a
-        // collision-resistant name opened exclusively ('wx') - let two concurrent downloads to
-        // the same savePath clobber each other's temp file.
-        const tempPath = `${params.savePath}.download-${randomUUID()}.tmp`;
-        try {
-          await pipeline(contentStream, fs.createWriteStream(tempPath, { flags: 'wx' }));
-          await fs.promises.rename(tempPath, params.savePath);
-        } catch (error) {
-          await fs.promises.rm(tempPath, { force: true });
-          throw error;
-        }
-        const { size } = fs.statSync(params.savePath);
-        return { fileName: params.fileName, savePath: params.savePath, size };
+        const { savePath, size } = await downloadStreamToFile(contentStream, params.savePath);
+        return { fileName: params.fileName, savePath, size };
       }
 
       const buffer = await this.bufferWithLimit(contentStream, MAX_BASE64_ATTACHMENT_BYTES);
