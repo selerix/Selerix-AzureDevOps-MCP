@@ -52,7 +52,7 @@ open a PR into `main`. A maintainer merges and publishes the package to the Sele
    ```
 
 3. Run `npm publish` under Node 20. `publishConfig` already targets the ADO feed
-   (`https://pkgs.dev.azure.com/selerix/_packaging/Selerix/npm/registry/`) and `prepublishOnly` runs the build.
+   (`https://pkgs.dev.azure.com/selerix/_packaging/Selerix/npm/registry/`) and `prepack` runs the build.
 
 Publishing needs a PAT with **Packaging Read & Write** scope in the user-level `~/.npmrc`. Never put it in
 the repo, and don't repoint `publishConfig` or `.npmrc` at GitHub Packages.
