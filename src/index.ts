@@ -18,8 +18,8 @@ import { EntraAuthHandler } from './Services/EntraAuthHandler';
 import { HTML_FORMAT_FIELD_WARNING, HTML_FORMAT_FIELD_PARAM_NOTE } from './utils/richTextFields';
 
 // Uses the string-instance-method form (not z.iso.*), which works under both Zod 3.25+
-// and Zod 4 — @modelcontextprotocol/sdk permits either, and this package doesn't pin zod
-// itself, so a consumer install can resolve to Zod 3.
+// and Zod 4 — @modelcontextprotocol/sdk permits either. The published bundle ships the
+// zod version from package.json, so keep this form in case that range ever moves.
 const isoDateString = z.union([z.string().date(), z.string().datetime({ offset: true })]);
 
 async function main() {
