@@ -52,19 +52,18 @@
   "engines": {
     "node": ">=16.0.0"
   },
-  "dependencies": {
+  "devDependencies": {
     "@azure/identity": "^4.0.0",
     "@modelcontextprotocol/sdk": "^1.23.0",
-    "azure-devops-node-api": "^14.1.0",
-    "dotenv": "^16.4.7"
-  },
-  "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^22.13.9",
+    "azure-devops-node-api": "^14.1.0",
+    "dotenv": "^16.4.7",
     "esbuild": "0.28.2",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "zod": "^4.4.3"
   }
 }
