@@ -215,7 +215,7 @@ For development or customization:
 ## Configuration
 
 ### Prerequisites
-- Node.js (v16 or later) 
+- Node.js (v20 or later)
 - An Azure DevOps account with a Personal Access Token (PAT) or appropriate credentials
 
 ### Environment Variables

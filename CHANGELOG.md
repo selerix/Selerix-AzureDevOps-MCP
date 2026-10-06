@@ -7,6 +7,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Self-contained package** - `dist/index.js` is now a single esbuild bundle that includes every
+  runtime dependency, so the published tarball runs with plain `node` and no `npm install`. Before,
+  running it outside an installed tree failed with
+  `Cannot find module '@modelcontextprotocol/sdk/server/mcp.js'`. The tarball ships only the bundle
+  and `dist/THIRD_PARTY_LICENSES.txt` (license notices for every bundled package), and its
+  `package.json` no longer lists runtime `dependencies`. Tools, env vars, `.env` lookup,
+  and auth are unchanged.
+- **Node 20 required** - `engines.node` is now `>=20.0.0`, matching what the bundled
+  `@azure/identity` and `@azure/msal-node` already needed.
+
 ## [1.5.2] - 2026-10-05
 
 ### Added
