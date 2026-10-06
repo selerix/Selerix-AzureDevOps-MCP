@@ -202,7 +202,13 @@ project uses — rather than requiring a separate, hand-rolled REST call.
 - The base64 decoded-size estimate now accounts for `=` padding, so a payload sitting exactly at
   the 1 KB boundary isn't incorrectly rejected.
 
-[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.5.2...v1.6.1
+[1.5.2]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.4.1...v1.5.1
+[1.4.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.3.1...v1.4.1
+[1.3.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/releases/tag/v1.1.0
