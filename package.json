@@ -8,6 +8,7 @@
   },
   "files": [
     "dist/index.js",
+    "dist/THIRD_PARTY_LICENSES.txt",
     "README.md",
     "LICENSE",
     "package.json"
@@ -16,7 +17,7 @@
     "clean": "node -e \"for (const d of ['dist', 'build']) require('fs').rmSync(d, { recursive: true, force: true })\"",
     "build": "npm run clean && tsc && npm run bundle",
     "build:ignore-errors": "npm run clean && (tsc --skipLibCheck --noEmitOnError false || node -e 0) && npm run bundle",
-    "bundle": "esbuild build/tsc/index.js --bundle --platform=node --target=node20 --format=cjs --keep-names --sourcemap --log-level=warning --outfile=dist/index.js",
+    "bundle": "esbuild build/tsc/index.js --bundle --platform=node --target=node20 --format=cjs --keep-names --sourcemap --log-level=warning --metafile=build/meta.json --outfile=dist/index.js && node scripts/third-party-notices.js build/meta.json dist/THIRD_PARTY_LICENSES.txt",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "test": "jest",

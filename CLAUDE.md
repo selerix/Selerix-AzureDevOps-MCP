@@ -104,7 +104,11 @@ Published to npm as `@ryancardin/azuredevops-mcp-server` and consumed via `npx` 
 build/run path (`node:lts-alpine`, `npm run build` then `npm run start`) — the `configSchema` there
 must stay in sync with the env vars `config.ts` actually reads.
 
-The tarball ships only `dist/index.js`, a single esbuild bundle that includes every runtime
+The tarball's code is `dist/index.js`, a single esbuild bundle that includes every runtime
 package, so it runs with plain `node` and no `npm install`. That is why all packages, runtime
 ones included, live in `devDependencies`. A new runtime import must be bundleable: no computed
 `require` paths and no native addons.
+
+Because the bundle redistributes third-party code, `npm run bundle` also writes
+`dist/THIRD_PARTY_LICENSES.txt` (via `scripts/third-party-notices.js`, from esbuild's metafile),
+and that file ships in the tarball next to the bundle.
