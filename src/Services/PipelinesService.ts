@@ -308,11 +308,27 @@ export class PipelinesService extends AzureDevOpsService {
         );
       }
 
-      return await buildApi.updateBuild(
+      const updated = await buildApi.updateBuild(
         { status: BuildInterfaces.BuildStatus.Cancelling } as BuildInterfaces.Build,
         this.config.project,
         params.buildId
       );
+
+      // The build can finish between the getBuild check above and this update, and Azure DevOps
+      // silently ignores an update to a completed build. A completed result is only a success if
+      // it's Canceled (a queued build's cancellation can finalize immediately); anything else
+      // means the build finished on its own and nothing was cancelled.
+      if (
+        updated.status === BuildInterfaces.BuildStatus.Completed &&
+        updated.result !== BuildInterfaces.BuildResult.Canceled
+      ) {
+        throw new Error(
+          `Build ${params.buildId} completed before it could be cancelled (result: ` +
+          `${updated.result !== undefined ? BuildInterfaces.BuildResult[updated.result] : "unknown"}).`
+        );
+      }
+
+      return updated;
     } catch (error) {
       console.error(`Error cancelling build ${params.buildId}:`, error);
       throw error;
