@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-10-06
+
 ### Changed
 
 - **Self-contained package** - `dist/index.js` is now a single esbuild bundle that includes every
