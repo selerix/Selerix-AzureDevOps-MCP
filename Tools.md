@@ -98,6 +98,7 @@ This document outlines potential Azure DevOps integrations that could be impleme
 - **queueBuild** - Queue a new build
 - **getBuilds** - Get all builds for a definition
 - **getBuildLogs** - Get logs for a build
+- **cancelBuild** - Cancel a queued or in-progress build
 - **getBuildStatus** - Get status of a build
 - **getLatestBuild** - Get the latest build for a definition
 
