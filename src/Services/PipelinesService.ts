@@ -19,6 +19,7 @@ import {
   ScheduleBuildParams,
   ListBuildsParams,
   GetBuildDetailsParams,
+  CancelBuildParams,
   GetBuildTestResultsParams,
   GetBuildLogsParams,
   GetBuildArtifactsParams,
@@ -282,6 +283,54 @@ export class PipelinesService extends AzureDevOpsService {
       return await buildApi.getBuild(this.config.project, params.buildId);
     } catch (error) {
       console.error(`Error getting build ${params.buildId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cancels a build that is queued (not yet started) or in progress, by asking Azure DevOps to
+   * move it to the Cancelling status - the same call the "Cancel" button in the UI makes. A
+   * queued build that hasn't been picked up by an agent is finalized as canceled by the server;
+   * a running one is stopped by its agent, so the returned build may still report
+   * status=cancelling rather than completed/canceled - re-check with getBuildDetails if needed.
+   * A build that has already completed can't be cancelled, so reject that explicitly rather than
+   * letting the update silently no-op.
+   */
+  public async cancelBuild(params: CancelBuildParams): Promise<BuildInterfaces.Build> {
+    try {
+      const buildApi = await this.getBuildApi();
+      const existing = await buildApi.getBuild(this.config.project, params.buildId);
+
+      if (existing.status === BuildInterfaces.BuildStatus.Completed) {
+        throw new Error(
+          `Build ${params.buildId} has already completed (result: ` +
+          `${existing.result !== undefined ? BuildInterfaces.BuildResult[existing.result] : "unknown"}) and cannot be cancelled.`
+        );
+      }
+
+      const updated = await buildApi.updateBuild(
+        { status: BuildInterfaces.BuildStatus.Cancelling } as BuildInterfaces.Build,
+        this.config.project,
+        params.buildId
+      );
+
+      // The build can finish between the getBuild check above and this update, and Azure DevOps
+      // silently ignores an update to a completed build. A completed result is only a success if
+      // it's Canceled (a queued build's cancellation can finalize immediately); anything else
+      // means the build finished on its own and nothing was cancelled.
+      if (
+        updated.status === BuildInterfaces.BuildStatus.Completed &&
+        updated.result !== BuildInterfaces.BuildResult.Canceled
+      ) {
+        throw new Error(
+          `Build ${params.buildId} completed before it could be cancelled (result: ` +
+          `${updated.result !== undefined ? BuildInterfaces.BuildResult[updated.result] : "unknown"}).`
+        );
+      }
+
+      return updated;
+    } catch (error) {
+      console.error(`Error cancelling build ${params.buildId}:`, error);
       throw error;
     }
   }
