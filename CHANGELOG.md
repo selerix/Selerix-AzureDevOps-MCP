@@ -7,6 +7,11 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`cancelBuild`** - cancel a queued or in-progress build by ID. Rejects builds that have already
+  completed instead of silently no-oping.
+
 ## [1.5.1] - 2026-09-30
 
 Adds a `Pipelines` tool domain covering the Build/Pipelines workflow this server had no coverage

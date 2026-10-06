@@ -2206,6 +2206,21 @@ async function main() {
       }
     );
 
+    allowedTools.has("cancelBuild") && server.tool("cancelBuild",
+      "Cancel a queued (not yet started) or in-progress build. Fails if the build has already completed",
+      {
+        buildId: z.number().describe("ID of the build to cancel")
+      },
+      async (params, extra) => {
+        const result = await pipelinesTools.cancelBuild(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     allowedTools.has("getBuildTestResults") && server.tool("getBuildTestResults",
       "Get the pass/fail test results published by a build, including each test's automated test name and storage (assembly)",
       {

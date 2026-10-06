@@ -236,6 +236,7 @@ Here's a list of all the tools mentioned in the README.md file:
 - `scheduleBuild`
 - `listBuilds`
 - `getBuildDetails`
+- `cancelBuild`
 - `getBuildTestResults`
 - `getBuildLogs`
 - `getBuildArtifacts`

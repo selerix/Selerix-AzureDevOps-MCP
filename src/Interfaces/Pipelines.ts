@@ -55,6 +55,10 @@ export interface GetBuildDetailsParams {
   buildId: number;
 }
 
+export interface CancelBuildParams {
+  buildId: number;
+}
+
 export type TestOutcomeFilter = 'none' | 'passed' | 'failed' | 'inconclusive' | 'timeout' | 'aborted' | 'blocked' | 'notExecuted' | 'warning' | 'error' | 'notApplicable' | 'paused' | 'inProgress' | 'notImpacted';
 
 export interface GetBuildTestResultsParams {

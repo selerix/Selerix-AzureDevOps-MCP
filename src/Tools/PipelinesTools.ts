@@ -8,6 +8,7 @@ import {
   ScheduleBuildParams,
   ListBuildsParams,
   GetBuildDetailsParams,
+  CancelBuildParams,
   GetBuildTestResultsParams,
   GetBuildLogsParams,
   GetBuildArtifactsParams,
@@ -78,6 +79,16 @@ export class PipelinesTools {
       return formatMcpResponse(result, `Build ${params.buildId} details`);
     } catch (error: unknown) {
       console.error("Error getting build details:", error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  async cancelBuild(params: CancelBuildParams): Promise<McpResponse> {
+    try {
+      const result = await this.service.cancelBuild(params);
+      return formatMcpResponse(result, `Cancellation requested for build ${params.buildId}`);
+    } catch (error: unknown) {
+      console.error("Error cancelling build:", error);
       return formatErrorResponse(error);
     }
   }
