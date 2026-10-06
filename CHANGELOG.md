@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-05
+
 ### Added
 
 - **`cancelBuild`** - cancel a queued or in-progress build by ID. Rejects builds that have already
