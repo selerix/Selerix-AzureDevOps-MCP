@@ -50,7 +50,7 @@
     "registry": "https://pkgs.dev.azure.com/selerix/_packaging/Selerix/npm/registry/"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=20.0.0"
   },
   "devDependencies": {
     "@azure/identity": "^4.0.0",
