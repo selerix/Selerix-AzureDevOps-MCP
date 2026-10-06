@@ -18,8 +18,8 @@ documents running it under Node 20 side-by-side with BenSelect's own Node 10.2x 
 
 ```bash
 npm install              # install dependencies
-npm run build             # tsc build -> dist/
-npm run build:ignore-errors  # tsc --skipLibCheck --noEmitOnError false (bypass TS errors to still emit dist/)
+npm run build             # clean, tsc (type-check, emits build/tsc/), esbuild bundle -> dist/index.js
+npm run build:ignore-errors  # same, but bundles even when tsc reports type errors
 npm run dev                # run directly from src/ via ts-node (src/index.ts)
 npm start                  # run the built server: node dist/index.js
 ```
@@ -103,3 +103,8 @@ Published to npm as `@ryancardin/azuredevops-mcp-server` and consumed via `npx` 
 (Cursor, Claude Desktop/Code, Smithery). `smithery.yaml` + `Dockerfile` define the Smithery-hosted
 build/run path (`node:lts-alpine`, `npm run build` then `npm run start`) — the `configSchema` there
 must stay in sync with the env vars `config.ts` actually reads.
+
+The tarball ships only `dist/index.js`, a single esbuild bundle that includes every runtime
+package, so it runs with plain `node` and no `npm install`. That is why all packages, runtime
+ones included, live in `devDependencies`. A new runtime import must be bundleable: no computed
+`require` paths and no native addons.
