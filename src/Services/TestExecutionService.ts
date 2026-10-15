@@ -95,7 +95,7 @@ export function parseTestSteps(stepsXml: string | undefined): ParsedTestStep[] {
     const id = parseInt(match[1], 10);
     steps.push({
       id,
-      actionPath: id.toString(16).toUpperCase().padStart(8, "0"),
+      actionPath: id.toString(16).padStart(8, "0"),
       type: match[2] as ParsedTestStep["type"],
       action: htmlToText(strings[0] ?? ""),
       expectedResult: htmlToText(strings[1] ?? ""),
@@ -396,12 +396,12 @@ export class TestExecutionService extends AzureDevOpsService {
       let unmatchedStepResults;
       if (params.includeSteps !== false && result.testCase?.id) {
         const actionResults = result.iterationDetails?.[0]?.actionResults || [];
-        const recorded = new Map(actionResults.map((a) => [a.actionPath, a]));
+        const recorded = new Map(actionResults.map((a) => [a.actionPath?.toLowerCase(), a]));
         const testCaseSteps = await this.getTestCaseSteps(Number(result.testCase.id));
         // Outcomes recorded under a path no listed step maps to (e.g. shared-step children, or
         // another client's path format) would otherwise be silently invisible here.
         const knownPaths = new Set(testCaseSteps.map((s) => s.actionPath));
-        const unmatched = actionResults.filter((a) => !knownPaths.has(a.actionPath!));
+        const unmatched = actionResults.filter((a) => !knownPaths.has(a.actionPath!.toLowerCase()));
         unmatchedStepResults = unmatched.length
           ? unmatched.map((a) => ({ actionPath: a.actionPath, outcome: a.outcome, comment: a.errorMessage }))
           : undefined;
@@ -471,7 +471,7 @@ export class TestExecutionService extends AzureDevOpsService {
       const iterationId = iteration?.id ?? 1;
       const now = new Date();
       const actionResults = new Map<string, TestActionResultModel>(
-        (iteration?.actionResults || []).map((a) => [a.actionPath!, a])
+        (iteration?.actionResults || []).map((a) => [a.actionPath!.toLowerCase(), a])
       );
       for (const [actionPath, update] of updates) {
         const step = steps.find((s) => s.actionPath === actionPath)!;
@@ -889,7 +889,7 @@ export class TestExecutionService extends AzureDevOpsService {
     }
     const testCase = await witApi.getWorkItem(testCaseId, undefined, undefined, undefined, this.config.project);
     const steps = parseTestSteps(testCase.fields?.["Microsoft.VSTS.TCM.Steps"]);
-    const recorded = new Map((result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath, a]));
+    const recorded = new Map((result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath?.toLowerCase(), a]));
 
     const title = result.testCaseTitle || testCase.fields?.["System.Title"] || `Test case ${testCaseId}`;
     const resultUrl = `${this.webBaseUrl()}/_testManagement/runs?runId=${runId}&_a=resultSummary&resultId=${resultId}`;

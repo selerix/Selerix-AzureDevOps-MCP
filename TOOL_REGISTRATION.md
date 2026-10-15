@@ -260,7 +260,7 @@ Notes:
   set up to run that test run.
 - Screenshots and recordings are uploaded from a local file path. The server cannot capture the
   screen itself.
-- Step outcomes are stored per step under an 8-digit hex action path. Steps inside shared step sets
+- Step outcomes are stored per step under an 8-digit lowercase hex action path (as the web UI writes them). Steps inside shared step sets
   are not expanded, so they cannot be marked individually.
 - `assignTester` works best with the tester's identity GUID.
 

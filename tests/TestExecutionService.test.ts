@@ -29,9 +29,9 @@ describe('parseTestSteps', () => {
     ]);
   });
 
-  it('encodes action paths as 8-digit hex', () => {
+  it('encodes action paths as 8-digit lowercase hex, as the web UI does', () => {
     const xml = '<steps><step id="10" type="ActionStep"><parameterizedString>x</parameterizedString></step></steps>';
-    expect(parseTestSteps(xml)[0].actionPath).toBe('0000000A');
+    expect(parseTestSteps(xml)[0].actionPath).toBe('0000000a');
   });
 
   it('returns no steps for empty input', () => {
