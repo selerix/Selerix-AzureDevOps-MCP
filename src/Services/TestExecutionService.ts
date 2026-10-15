@@ -65,8 +65,8 @@ import {
 
 // The test attachment API takes the file as a base64 string inside a JSON body.
 const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
-// Upper bound on run-name lookups for one history response.
-const MAX_RUN_NAME_LOOKUPS = 25;
+// Runs looked up at the same time when enriching a history response.
+const RUN_LOOKUP_CONCURRENCY = 5;
 // Pages of test points read for one suite before giving up (Azure DevOps pages them).
 const MAX_POINT_PAGES = 50;
 // Test results are paged with skip/top: results per request, and requests before giving up.
@@ -129,6 +129,34 @@ function sameRunLink(a: string | undefined, b: string): boolean {
   const runOf = (url: string) => /[?&]runId=(\d+)/i.exec(url)?.[1];
   const runA = runOf(a);
   return runA !== undefined && runA === runOf(b);
+}
+
+/** Run `fn` over `items` with at most `limit` in flight at once, keeping the order of the results. */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
+ * The bugs of a history result. When its run could not be read, an empty list would claim "no
+ * bugs" for a result whose bugs are simply unknown, so only what the query itself reported is
+ * returned, and nothing at all when that is empty.
+ */
+function bugsOf(
+  runInfo: Map<number, { bugs: Map<number, number[]> }>,
+  r: { id?: number; testRun?: { id?: string }; associatedBugs?: { id?: string }[] }
+): number[] | undefined {
+  const info = runInfo.get(Number(r.testRun?.id));
+  const merged = mergeBugIds(info?.bugs.get(r.id!), r.associatedBugs);
+  return info || merged.length > 0 ? merged : undefined;
 }
 
 /** Union of bug ids from two sources, keeping order. */
@@ -1232,30 +1260,29 @@ export class TestExecutionService extends AzureDevOpsService {
 
   /**
    * Look up the name of each run and the bugs associated with its results. The results query
-   * returns neither (names blank, bugs empty), so both come from the run itself. Runs that can't
-   * be read are left out.
+   * returns neither (names blank, bugs empty), so both come from the run itself. Every run is
+   * looked up, a few at a time. A run that can't be read is left out of the result, so callers
+   * can tell "no bugs" from "not looked up".
    */
   protected async getRunInfo(runIds: number[]): Promise<Map<number, { name?: string; bugs: Map<number, number[]> }>> {
     const info = new Map<number, { name?: string; bugs: Map<number, number[]> }>();
-    const distinct = [...new Set(runIds.filter((id) => Number.isFinite(id)))].slice(0, MAX_RUN_NAME_LOOKUPS);
+    const distinct = [...new Set(runIds.filter((id) => Number.isFinite(id)))];
     const testApi = await this.getTestApi();
-    await Promise.all(
-      distinct.map(async (id) => {
-        try {
-          const run = await testApi.getTestRunById(this.config.project, id);
-          const results = await this.getAllRunResults(id, ResultDetails.WorkItems);
-          const bugs = new Map<number, number[]>();
-          for (const r of results || []) {
-            if (r.id !== undefined && r.associatedBugs?.length) {
-              bugs.set(r.id, r.associatedBugs.map((b) => Number(b.id)));
-            }
+    await mapWithConcurrency(distinct, RUN_LOOKUP_CONCURRENCY, async (id) => {
+      try {
+        const run = await testApi.getTestRunById(this.config.project, id);
+        const results = await this.getAllRunResults(id, ResultDetails.WorkItems);
+        const bugs = new Map<number, number[]>();
+        for (const r of results || []) {
+          if (r.id !== undefined && r.associatedBugs?.length) {
+            bugs.set(r.id, r.associatedBugs.map((b) => Number(b.id)));
           }
-          info.set(id, { name: run?.name || undefined, bugs });
-        } catch {
-          // a run that can't be read just keeps no name and no bugs
         }
-      })
-    );
+        info.set(id, { name: run?.name || undefined, bugs });
+      } catch {
+        // left out: the caller reports it as not looked up
+      }
+    });
     return info;
   }
 
@@ -1312,6 +1339,7 @@ export class TestExecutionService extends AzureDevOpsService {
 
       let history: Record<number, unknown[]> | undefined;
       let historyError: string | undefined;
+      const historyRunsNotLookedUp: number[] = [];
       if (params.includeHistory && shown.length > 0) {
         try {
           const testApi = await this.getTestApi();
@@ -1327,6 +1355,9 @@ export class TestExecutionService extends AzureDevOpsService {
             results.push(...(response?.results || []));
           }
           const runInfo = await this.getRunInfo(results.map((r) => Number(r.testRun?.id)));
+          historyRunsNotLookedUp.push(
+            ...[...new Set(results.map((r) => Number(r.testRun?.id)))].filter((id) => Number.isFinite(id) && !runInfo.has(id))
+          );
           history = {};
           for (const r of results) {
             const pointId = Number(r.testPoint?.id);
@@ -1340,7 +1371,7 @@ export class TestExecutionService extends AzureDevOpsService {
               outcome: r.outcome,
               runBy: r.runBy?.displayName,
               completedDate: r.completedDate,
-              associatedBugs: mergeBugIds(runInfo.get(Number(r.testRun?.id))?.bugs.get(r.id!), r.associatedBugs),
+              associatedBugs: bugsOf(runInfo, r),
             });
           }
         } catch (error) {
@@ -1355,6 +1386,7 @@ export class TestExecutionService extends AzureDevOpsService {
         unresolvedTestCaseIds,
         points: shown.map((p) => ({ ...p, history: history?.[p.pointId] })),
         historyError,
+        historyRunsNotLookedUp: historyRunsNotLookedUp.length ? historyRunsNotLookedUp : undefined,
       };
     } catch (error) {
       console.error(`Error getting test points for plan ${params.planId}:`, error);
@@ -1379,9 +1411,12 @@ export class TestExecutionService extends AzureDevOpsService {
       const results = response?.results || [];
       // The query leaves the run name blank, so look the names up.
       const runInfo = await this.getRunInfo(results.map((r) => Number(r.testRun?.id)));
+      const notEnriched = [...new Set(results.map((r) => Number(r.testRun?.id)))].filter((id) => Number.isFinite(id) && !runInfo.has(id));
       return {
         testCaseId: params.testCaseId,
         count: results.length,
+        // runs that could not be read: their names and bugs are unknown, not empty
+        runsNotLookedUp: notEnriched.length ? notEnriched : undefined,
         executions: results.map((r) => ({
           runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
           runName: runInfo.get(Number(r.testRun?.id))?.name || r.testRun?.name || undefined,
@@ -1393,7 +1428,7 @@ export class TestExecutionService extends AzureDevOpsService {
           completedDate: r.completedDate,
           configuration: r.configuration?.name,
           build: r.build?.name,
-          associatedBugs: mergeBugIds(runInfo.get(Number(r.testRun?.id))?.bugs.get(r.id!), r.associatedBugs),
+          associatedBugs: bugsOf(runInfo, r),
         })),
       };
     } catch (error) {

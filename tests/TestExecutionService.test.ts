@@ -301,6 +301,76 @@ describe('TestExecutionService', () => {
       ]);
     });
 
+    describe('history enrichment', () => {
+      const historyOf = (runIds: number[]) => ({
+        results: runIds.map((id, i) => ({ id: 100000, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: String(id) }, completedDate: i }))
+      });
+
+      it('looks up every run, however many, and reports the bugs of the last one too', async () => {
+        const runIds = Array.from({ length: 30 }, (_, i) => 2000 + i);
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf(runIds));
+        testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => ({ id, name: `run ${id}` }));
+        testApi.getTestResults.mockImplementation(async (_p: string, id: number) =>
+          [{ id: 100000, associatedBugs: id === 2029 ? [{ id: '23256' }] : [] }]);
+
+        const out = await service.getTestCaseExecutionHistory({ testCaseId: 5, top: 30 });
+        expect(testApi.getTestRunById).toHaveBeenCalledTimes(30);
+        expect(out.executions[29]).toEqual(expect.objectContaining({ runName: 'run 2029', associatedBugs: [23256] }));
+        expect(out.runsNotLookedUp).toBeUndefined();
+      });
+
+      it('looks runs up a few at a time, not all at once', async () => {
+        const runIds = Array.from({ length: 20 }, (_, i) => 3000 + i);
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf(runIds));
+        let inFlight = 0;
+        let peak = 0;
+        testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          inFlight--;
+          return { id, name: `run ${id}` };
+        });
+        testApi.getTestResults.mockResolvedValue([]);
+        await service.getTestCaseExecutionHistory({ testCaseId: 5, top: 20 });
+        expect(peak).toBeLessThanOrEqual(5);
+        expect(peak).toBeGreaterThan(1);
+      });
+
+      it('says a run was not looked up instead of reporting an empty bug list for it', async () => {
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf([77, 78]));
+        testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => {
+          if (id === 77) throw new Error('run unavailable');
+          return { id, name: 'run 78' };
+        });
+        testApi.getTestResults.mockResolvedValue([{ id: 100000, associatedBugs: [{ id: '9' }] }]);
+
+        const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+        expect(out.runsNotLookedUp).toEqual([77]);
+        expect(out.executions[0].associatedBugs).toBeUndefined();
+        expect(out.executions[0].runName).toBeUndefined();
+        expect(out.executions[1].associatedBugs).toEqual([9]);
+      });
+
+      it('keeps the bugs the query itself reported for a run that was not looked up', async () => {
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
+          results: [{ id: 100000, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' }, associatedBugs: [{ id: '5' }] }]
+        });
+        testApi.getTestRunById.mockRejectedValue(new Error('run unavailable'));
+        const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+        expect(out.executions[0].associatedBugs).toEqual([5]);
+      });
+
+      it('getTestPoints history reports runs it could not look up', async () => {
+        testPlanApi.getPointsList.mockResolvedValue([{ id: 9, testCaseReference: { id: 5, name: 'Save works' } }]);
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf([77]));
+        testApi.getTestRunById.mockRejectedValue(new Error('run unavailable'));
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true });
+        expect(out.historyRunsNotLookedUp).toEqual([77]);
+        expect((out.points[0].history as { associatedBugs?: number[] }[])[0].associatedBugs).toBeUndefined();
+      });
+    });
+
     it('finds the bugs of results on later pages when enriching history', async () => {
       testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
         results: [{ id: 600, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' } }]
