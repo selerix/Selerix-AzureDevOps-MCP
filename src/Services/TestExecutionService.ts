@@ -948,7 +948,8 @@ export class TestExecutionService extends AzureDevOpsService {
         // Outcomes recorded under a path no listed step maps to (e.g. shared-step children, or
         // another client's path format) would otherwise be silently invisible here.
         const knownPaths = new Set(testCaseSteps.map((s) => s.actionPath));
-        const unmatched = actionResults.filter((a) => !knownPaths.has(a.actionPath!.toLowerCase()));
+        // an entry with no path at all (written by another client) cannot be matched to a step either
+        const unmatched = actionResults.filter((a) => !a.actionPath || !knownPaths.has(a.actionPath.toLowerCase()));
         unmatchedStepResults = unmatched.length
           ? unmatched.map((a) => ({ actionPath: a.actionPath, outcome: a.outcome, comment: a.errorMessage }))
           : undefined;
@@ -1028,8 +1029,12 @@ export class TestExecutionService extends AzureDevOpsService {
       const iteration = selected.iteration;
       const iterationId = selected.id;
       const now = new Date();
+      // Entries with no action path (another client's data) cannot be matched to a step and must
+      // not make this call fail; they belong to the result, so they are sent back untouched.
+      const recordedResults = iteration?.actionResults || [];
+      const withoutPath = recordedResults.filter((a) => !a.actionPath);
       const actionResults = new Map<string, TestActionResultModel>(
-        (iteration?.actionResults || []).map((a) => [a.actionPath!.toLowerCase(), a])
+        recordedResults.filter((a) => a.actionPath).map((a) => [a.actionPath!.toLowerCase(), a])
       );
       for (const [actionPath, update] of updates) {
         const step = steps.find((s) => s.actionPath === actionPath)!;
@@ -1072,7 +1077,7 @@ export class TestExecutionService extends AzureDevOpsService {
         );
       }
 
-      const all = [...actionResults.values()];
+      const all = [...actionResults.values(), ...withoutPath];
       const iterationOutcome = all.some((a) => a.outcome === "Failed")
         ? "Failed"
         : steps.length > 0 && steps.every((s) => actionResults.get(s.actionPath)?.outcome === "Passed")

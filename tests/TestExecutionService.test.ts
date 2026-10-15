@@ -1164,6 +1164,38 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('recorded step results that have no action path', () => {
+    // written by another client: there is nothing to match them to a step
+    const orphan = { iterationId: 1, outcome: 'Failed', errorMessage: 'from another client' };
+    beforeEach(() => {
+      testApi.getTestResultById.mockResolvedValue(
+        resultWithIteration([orphan, { actionPath: '00000002', iterationId: 1, outcome: 'Passed' }])
+      );
+    });
+
+    it('does not make reading the result fail, and shows the entry as unmatched', async () => {
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(out.steps!.find((s) => s.stepId === 2)!.outcome).toBe('Passed');
+      expect(out.unmatchedStepResults).toEqual([{ actionPath: undefined, outcome: 'Failed', comment: 'from another client' }]);
+    });
+
+    it('does not make marking steps fail, and sends the entry back untouched', async () => {
+      await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 3, outcome: 'Passed' }] });
+      const sent = testApi.updateTestResults.mock.calls[0][0][0].iterationDetails[0].actionResults as any[];
+      expect(sent).toContainEqual(orphan);
+      expect(sent.map((a) => a.actionPath).filter(Boolean).sort()).toEqual(['00000002', '00000003']);
+    });
+
+    it('still counts the entry when working out whether the iteration failed', async () => {
+      const out = await service.setTestStepResults({ runId: 77, resultId: 100000, allStepsOutcome: 'Passed' });
+      expect(out.iterationOutcome).toBe('Failed');
+    });
+
+    it('does not make a bug report fail', async () => {
+      await expect(service.createBugFromTestRun({ runId: 77, resultId: 100000 })).resolves.toBeDefined();
+    });
+  });
+
   describe('a test case whose steps field contains a commented-out step', () => {
     const WITH_COMMENT =
       '<steps id="0" last="99"><!-- <step id="99" type="ActionStep"><parameterizedString>old</parameterizedString></step> -->' +
