@@ -105,6 +105,59 @@ describe('parseTestSteps', () => {
     });
   });
 
+  describe('step text in its XML and HTML layers', () => {
+    const textOf = (inner: string) =>
+      parseTestSteps(`<steps><step id="1" type="ActionStep"><parameterizedString isformatted="true">${inner}</parameterizedString><parameterizedString>Then</parameterizedString></step></steps>`)[0].action;
+
+    it.each([
+      ['plain text', 'Click save'],
+      ['a CDATA section', '<![CDATA[Click save]]>'],
+      ['a CDATA section holding HTML', '<![CDATA[<div><p>Click <b>save</b></p></div>]]>'],
+      ['escaped HTML', '&lt;div&gt;&lt;p&gt;Click &lt;b&gt;save&lt;/b&gt;&lt;/p&gt;&lt;/div&gt;'],
+      ['a decimal character reference', 'Click &#115;ave'],
+      ['a hexadecimal character reference', 'Click &#x73;ave'],
+      ['an upper-case hexadecimal reference', 'Click &#X73;ave'],
+      ['references to the angle brackets of a tag', '&#60;div&#62;Click save&#60;/div&#62;'],
+      ['CDATA mixed with references', '<![CDATA[<b>]]>Click &#115;ave'],
+      ['a non-breaking space', 'Click&amp;nbsp;save']
+    ])('gives "Click save" for %s', (_label, inner) => {
+      expect(textOf(inner)).toBe('Click save');
+    });
+
+    it('decodes &apos; and the other XML named references', () => {
+      expect(textOf("It&apos;s &quot;ready&quot; &amp;amp; set")).toBe('It\'s "ready" & set');
+    });
+
+    it('decodes each layer once, so escaped markup stays text rather than becoming a tag', () => {
+      // typed as the text "a <b> c" in a formatted step: HTML "a &lt;b&gt; c", XML-escaped once more
+      expect(textOf('&lt;p&gt;a &amp;lt;b&amp;gt; c&lt;/p&gt;')).toBe('a <b> c');
+    });
+
+    it('does not decode the inside of a CDATA section as XML', () => {
+      expect(textOf('<![CDATA[Tom &amp; Jerry]]>')).toBe('Tom & Jerry'); // HTML layer still reads &amp; as &
+      expect(textOf('<![CDATA[a &#115; b]]>')).toBe('a s b');
+    });
+
+    it('keeps text between several CDATA sections', () => {
+      expect(textOf('<![CDATA[One]]>, &amp;lt;two&amp;gt;, <![CDATA[three]]>')).toBe('One, <two>, three');
+    });
+
+    it('leaves references it cannot decode as they are', () => {
+      expect(textOf('a &#xZZ; b &#99999999; c &#0; d &unknown; e')).toBe('a &#xZZ; b &#99999999; c &#0; d &unknown; e');
+    });
+
+    it('turns line breaks and block ends into newlines', () => {
+      expect(textOf('&lt;div&gt;One&lt;br/&gt;Two&lt;/div&gt;&lt;p&gt;Three&lt;/p&gt;')).toBe('One\nTwo\nThree');
+    });
+
+    it('reads the expected result the same way', () => {
+      const [step] = parseTestSteps(
+        '<steps><step id="1" type="ValidateStep"><parameterizedString>Do</parameterizedString><parameterizedString><![CDATA[It &lt;works&gt;]]></parameterizedString></step></steps>'
+      );
+      expect(step.expectedResult).toBe('It <works>');
+    });
+  });
+
   it('returns a shared step reference as its own row, in document order', () => {
     const steps = parseTestSteps(SHARED_STEPS_XML);
     expect(steps.map((s) => [s.identifier, s.type, s.sharedStepId])).toEqual([

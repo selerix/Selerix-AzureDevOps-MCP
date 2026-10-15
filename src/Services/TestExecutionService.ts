@@ -92,30 +92,64 @@ const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
 
-const HTML_ENTITIES: Record<string, string> = {
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#39;": "'",
-  "&nbsp;": " ",
-  "&amp;": "&",
-};
-
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Decode the (possibly double-encoded) HTML ADO stores in step text down to plain text. */
-function htmlToText(value: string): string {
-  let text = value;
-  // Step text is XML-escaped HTML, so one pass of decoding yields tags, a second yields text.
-  for (let pass = 0; pass < 2; pass++) {
-    text = text.replace(/&(lt|gt|quot|#39|nbsp|amp);/g, (m) => HTML_ENTITIES[m] ?? m);
-    if (pass === 0) {
-      text = text.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(div|p)>/gi, "\n").replace(/<[^>]+>/g, "");
-    }
+// Named references understood in either layer; others are left as they are.
+const NAMED_REFERENCES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'", nbsp: "\u00a0" };
+
+/** The character a numeric reference stands for, or undefined when it is not a valid code point. */
+function codePointOf(digits: string, radix: 10 | 16): string | undefined {
+  const code = parseInt(digits, radix);
+  if (!Number.isInteger(code) || code < 1 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+    return undefined;
   }
-  return text.replace(/\n{2,}/g, "\n").trim();
+  return String.fromCodePoint(code);
+}
+
+/**
+ * Decode character references - &lt; &amp; &quot; &apos; (and &nbsp; when `html`), decimal &#115; and
+ * hex &#x73; - in a single pass, so the result of one is never decoded again ("&amp;lt;" gives
+ * "&lt;", not "<"). Anything that is not a valid reference is left untouched.
+ */
+function decodeReferences(text: string, html: boolean): string {
+  return text.replace(/&(?:#[xX]([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g, (match, hex, dec, name) => {
+    if (hex !== undefined) return codePointOf(hex, 16) ?? match;
+    if (dec !== undefined) return codePointOf(dec, 10) ?? match;
+    const key = String(name).toLowerCase();
+    return key === "nbsp" && !html ? match : NAMED_REFERENCES[key] ?? match;
+  });
+}
+
+/**
+ * Layer one: the text inside an XML element. A CDATA section is literal (nothing in it is decoded);
+ * everything around it has its XML references decoded. What comes out is the HTML the step was
+ * written in.
+ */
+function decodeXmlText(value: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of value.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>/g)) {
+    out += decodeReferences(value.slice(last, m.index), false) + m[1];
+    last = m.index! + m[0].length;
+  }
+  return out + decodeReferences(value.slice(last), false);
+}
+
+/**
+ * Layer two: HTML to plain text. Tags are removed first - turning line breaks and block ends into
+ * newlines - and only then are the HTML references decoded, so text such as "&lt;b&gt;" stays the
+ * text "<b>" instead of being mistaken for a tag.
+ */
+function htmlToPlainText(html: string): string {
+  const withoutTags = html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(div|p|li|tr)>/gi, "\n").replace(/<[^>]+>/g, "");
+  return decodeReferences(withoutTags, true).replace(/\u00a0/g, " ").replace(/\n{2,}/g, "\n").trim();
+}
+
+/** Step text as stored in the steps XML (XML text holding HTML), as plain text. */
+function htmlToText(value: string): string {
+  return htmlToPlainText(decodeXmlText(value));
 }
 
 /** Name of a numeric enum value; the value itself when it is not a known member. */
