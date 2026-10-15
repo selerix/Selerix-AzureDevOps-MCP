@@ -671,88 +671,147 @@ describe('TestExecutionService', () => {
     });
 
     describe('history enrichment', () => {
-      const historyOf = (runIds: number[]) => ({
-        results: runIds.map((id, i) => ({ id: 100000, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: String(id) }, completedDate: i }))
+      const historyOf = (entries: { run: number; result?: number }[]) => ({
+        results: entries.map((e, i) => ({ id: e.result ?? 100000, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: String(e.run) }, completedDate: i }))
       });
+      const runs = (...ids: number[]) => historyOf(ids.map((run) => ({ run })));
+      // the bugs of each result, by run; a run that is not listed has none
+      const bugsByRun = (bugs: Record<number, number[]>) =>
+        testApi.getTestResultById.mockImplementation(async (_p: string, runId: number, resultId: number) => ({
+          id: resultId, associatedBugs: (bugs[runId] || []).map((id) => ({ id: String(id) }))
+        }));
+      const named = () => testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => ({ id, name: `run ${id}` }));
 
       it('looks up every run, however many, and reports the bugs of the last one too', async () => {
         const runIds = Array.from({ length: 30 }, (_, i) => 2000 + i);
-        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf(runIds));
-        testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => ({ id, name: `run ${id}` }));
-        testApi.getTestResults.mockImplementation(async (_p: string, id: number) =>
-          [{ id: 100000, associatedBugs: id === 2029 ? [{ id: '23256' }] : [] }]);
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(runs(...runIds));
+        named();
+        bugsByRun({ 2029: [23256] });
 
         const out = await service.getTestCaseExecutionHistory({ testCaseId: 5, top: 30 });
         expect(testApi.getTestRunById).toHaveBeenCalledTimes(30);
+        expect(testApi.getTestResultById).toHaveBeenCalledTimes(30);
         expect(out.executions[29]).toEqual(expect.objectContaining({ runName: 'run 2029', associatedBugs: [23256] }));
         expect(out.runsNotLookedUp).toBeUndefined();
       });
 
-      it('looks runs up a few at a time, not all at once', async () => {
-        const runIds = Array.from({ length: 20 }, (_, i) => 3000 + i);
-        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf(runIds));
+      it('reads only the results it needs, never every result of a run', async () => {
+        // run 77 may have 20,000 results; finding one entry's bugs must not page through them
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf([{ run: 77, result: 19999 }]));
+        named();
+        bugsByRun({ 77: [23256] });
+
+        const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+
+        expect(testApi.getTestResults).not.toHaveBeenCalled();
+        expect(testApi.getTestResultById).toHaveBeenCalledTimes(1);
+        expect(testApi.getTestResultById).toHaveBeenCalledWith('Engineering', 77, 19999, 2); // 2 = work items
+        expect(testApi.getTestRunById).toHaveBeenCalledTimes(1);
+        expect(out.executions[0].associatedBugs).toEqual([23256]);
+      });
+
+      it('looks each run up once however many of its results are listed, and each result once', async () => {
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(
+          historyOf([{ run: 77, result: 1 }, { run: 77, result: 2 }, { run: 77, result: 3 }, { run: 77, result: 1 }, { run: 78, result: 1 }])
+        );
+        named();
+        bugsByRun({});
+        await service.getTestCaseExecutionHistory({ testCaseId: 5, top: 10 });
+
+        expect(testApi.getTestRunById).toHaveBeenCalledTimes(2);
+        expect(testApi.getTestResultById.mock.calls.map((c) => `${c[1]}/${c[2]}`).sort()).toEqual(['77/1', '77/2', '77/3', '78/1']);
+      });
+
+      it('looks things up a few at a time, not all at once', async () => {
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(runs(...Array.from({ length: 20 }, (_, i) => 3000 + i)));
         let inFlight = 0;
         let peak = 0;
-        testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => {
+        const slow = async (value: unknown) => {
           inFlight++;
           peak = Math.max(peak, inFlight);
           await new Promise((resolve) => setTimeout(resolve, 5));
           inFlight--;
-          return { id, name: `run ${id}` };
-        });
-        testApi.getTestResults.mockResolvedValue([]);
+          return value;
+        };
+        testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => slow({ id, name: `run ${id}` }));
+        testApi.getTestResultById.mockImplementation(async (_p: string, _r: number, id: number) => slow({ id, associatedBugs: [] }));
         await service.getTestCaseExecutionHistory({ testCaseId: 5, top: 20 });
         expect(peak).toBeLessThanOrEqual(5);
         expect(peak).toBeGreaterThan(1);
       });
 
-      it('says a run was not looked up instead of reporting an empty bug list for it', async () => {
-        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf([77, 78]));
+      it('marks a run as not fully looked up when its name cannot be read, but still reports the bugs it could read', async () => {
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(runs(77, 78));
         testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => {
           if (id === 77) throw new Error('run unavailable');
           return { id, name: 'run 78' };
         });
-        testApi.getTestResults.mockResolvedValue([{ id: 100000, associatedBugs: [{ id: '9' }] }]);
+        bugsByRun({ 77: [9], 78: [10] });
 
         const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
         expect(out.runsNotLookedUp).toEqual([77]);
-        expect(out.executions[0].associatedBugs).toBeUndefined();
         expect(out.executions[0].runName).toBeUndefined();
-        expect(out.executions[1].associatedBugs).toEqual([9]);
+        expect(out.executions[0].associatedBugs).toEqual([9]);
+        expect(out.executions[1]).toEqual(expect.objectContaining({ runName: 'run 78', associatedBugs: [10] }));
       });
 
-      it('keeps the bugs the query itself reported for a run that was not looked up', async () => {
+      it('does not report an empty bug list for a result that could not be read', async () => {
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(runs(77, 78));
+        named();
+        testApi.getTestResultById.mockImplementation(async (_p: string, runId: number, resultId: number) => {
+          if (runId === 77) throw new Error('result unavailable');
+          return { id: resultId, associatedBugs: [] };
+        });
+
+        const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+        expect(out.runsNotLookedUp).toEqual([77]);
+        expect(out.executions[0].runName).toBe('run 77'); // the name was readable
+        expect(out.executions[0].associatedBugs).toBeUndefined(); // unknown, not none
+        expect(out.executions[1].associatedBugs).toEqual([]); // known to be none
+      });
+
+      it('keeps the bugs the query itself reported when the lookups fail', async () => {
         testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
           results: [{ id: 100000, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' }, associatedBugs: [{ id: '5' }] }]
         });
         testApi.getTestRunById.mockRejectedValue(new Error('run unavailable'));
+        testApi.getTestResultById.mockRejectedValue(new Error('result unavailable'));
         const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
         expect(out.executions[0].associatedBugs).toEqual([5]);
       });
 
       it('getTestPoints history reports runs it could not look up', async () => {
         testPlanApi.getPointsList.mockResolvedValue([{ id: 9, testCaseReference: { id: 5, name: 'Save works' } }]);
-        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf([77]));
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(runs(77));
         testApi.getTestRunById.mockRejectedValue(new Error('run unavailable'));
+        testApi.getTestResultById.mockRejectedValue(new Error('result unavailable'));
         const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true });
         expect(out.historyRunsNotLookedUp).toEqual([77]);
         expect((out.points[0].history as { associatedBugs?: number[] }[])[0].associatedBugs).toBeUndefined();
+      });
+
+      it('getTestPoints reads only the results of the entries it returns', async () => {
+        testPlanApi.getPointsList.mockResolvedValue([{ id: 9, testCaseReference: { id: 5, name: 'Save works' } }]);
+        testApi.getTestResultsByQuery = jest.fn().mockResolvedValue(historyOf(Array.from({ length: 8 }, (_, i) => ({ run: 500 + i, result: 1 }))));
+        named();
+        bugsByRun({ 500: [1], 501: [2] });
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true, historyTop: 2 });
+
+        expect(testApi.getTestResults).not.toHaveBeenCalled();
+        expect(testApi.getTestResultById.mock.calls.map((c) => c[1])).toEqual([500, 501]); // 2 of the 8, not all
+        expect((out.points[0].history as { associatedBugs: number[] }[]).map((h) => h.associatedBugs)).toEqual([[1], [2]]);
       });
     });
 
     it('asks for at most 200 results per page when details are requested, and treats only a short page as the last', async () => {
       // Azure DevOps caps a detailed page at 200: a full 200-result page must be followed by another request
-      testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
-        results: [{ id: 450, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' } }]
-      });
-      // result 450 is on the third page (after 400 results)
       testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
-        skip === 0 ? results(1, 200) : skip === 200 ? results(201, 200) : [{ id: 450, associatedBugs: [{ id: '777' }] }]);
+        skip === 0 ? results(1, 200) : skip === 200 ? results(201, 200) : [{ id: 450 }]);
 
-      const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+      const all = await (service as any).getAllRunResults(77, 2);
 
       expect(testApi.getTestResults.mock.calls.map((c) => [c[3], c[4]])).toEqual([[0, 200], [200, 200], [400, 200]]);
-      expect(out.executions[0].associatedBugs).toEqual([777]);
+      expect(all).toHaveLength(401);
     });
 
     it('still reads plain result lists 500 at a time', async () => {
@@ -762,15 +821,6 @@ describe('TestExecutionService', () => {
       expect(testApi.getTestResults.mock.calls.map((c) => [c[3], c[4]])).toEqual([[0, 500], [500, 500]]);
     });
 
-    it('finds the bugs of results on later pages when enriching history', async () => {
-      testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
-        results: [{ id: 600, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' } }]
-      });
-      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
-        skip === 0 ? results(1, 200) : [{ id: 600, associatedBugs: [{ id: '23256' }] }]);
-      const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
-      expect(out.executions[0].associatedBugs).toEqual([23256]);
-    });
   });
 
   describe('result point ids when a test case has several points', () => {
@@ -2400,9 +2450,9 @@ describe('TestExecutionService', () => {
       testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
         results: [{ id: 100000, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' }, associatedBugs: [] }]
       });
-      testApi.getTestResults.mockResolvedValue([{ id: 100000, associatedBugs: [{ id: '23256' }] }]);
+      testApi.getTestResultById.mockResolvedValue({ id: 100000, associatedBugs: [{ id: '23256' }] });
       const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
-      expect(testApi.getTestResults).toHaveBeenCalledWith('Engineering', 77, 2, 0, 200);
+      expect(testApi.getTestResultById).toHaveBeenCalledWith('Engineering', 77, 100000, 2);
       expect(out.executions[0].associatedBugs).toEqual([23256]);
     });
 

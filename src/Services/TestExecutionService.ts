@@ -66,6 +66,15 @@ import {
 
 // The test attachment API takes the file as a base64 string inside a JSON body.
 const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+// What history enrichment learns about one run: its name, and the bugs of the results asked about.
+type RunEnrichment = {
+  name?: string;
+  /** bugs per result, for the results whose lookup succeeded (an empty list means "none") */
+  bugs: Map<number, number[]>;
+  /** false when the run's name or any asked-about result could not be read */
+  complete: boolean;
+};
+
 // A shared step set as recorded on a result's reference row: which work item, at which revision.
 type SharedStepPin = { id: number; revision: number };
 
@@ -218,17 +227,26 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
 }
 
 /**
- * The bugs of a history result. When its run could not be read, an empty list would claim "no
- * bugs" for a result whose bugs are simply unknown, so only what the query itself reported is
+ * The bugs of a history result. When the lookup for that result failed, an empty list would claim
+ * "no bugs" for a result whose bugs are simply unknown, so only what the query itself reported is
  * returned, and nothing at all when that is empty.
  */
 function bugsOf(
-  runInfo: Map<number, { bugs: Map<number, number[]> }>,
+  runInfo: Map<number, RunEnrichment>,
   r: { id?: number; testRun?: { id?: string }; associatedBugs?: { id?: string }[] }
 ): number[] | undefined {
   const info = runInfo.get(Number(r.testRun?.id));
+  const looked = info?.bugs.has(r.id!) ?? false;
   const merged = mergeBugIds(info?.bugs.get(r.id!), r.associatedBugs);
-  return info || merged.length > 0 ? merged : undefined;
+  return looked || merged.length > 0 ? merged : undefined;
+}
+
+/** The (run, result) pairs of history results, and the runs they belong to, ready for enrichment. */
+function enrichmentTargets(results: { id?: number; testRun?: { id?: string } }[]) {
+  const entries = results
+    .map((r) => ({ runId: Number(r.testRun?.id), resultId: r.id }))
+    .filter((e): e is { runId: number; resultId: number } => Number.isFinite(e.runId) && e.resultId !== undefined);
+  return { entries, runIds: [...new Set(entries.map((e) => e.runId))] };
 }
 
 /**
@@ -1644,28 +1662,37 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   /**
-   * Look up the name of each run and the bugs associated with its results. The results query
-   * returns neither (names blank, bugs empty), so both come from the run itself. Every run is
-   * looked up, a few at a time. A run that can't be read is left out of the result, so callers
-   * can tell "no bugs" from "not looked up".
+   * Look up the name of each run and the bugs of the specific results asked about. The results
+   * query returns neither (names blank, bugs empty), so both come from the run and from the
+   * results themselves. Only those results are read - one request each, a few at a time - rather
+   * than every result of every run, which for a large run is many pages to find one entry's bugs;
+   * each run's name is looked up once. Whatever cannot be read is left unknown rather than empty:
+   * the run is marked incomplete, so callers can tell "no bugs" from "not looked up".
    */
-  protected async getRunInfo(runIds: number[]): Promise<Map<number, { name?: string; bugs: Map<number, number[]> }>> {
-    const info = new Map<number, { name?: string; bugs: Map<number, number[]> }>();
-    const distinct = [...new Set(runIds.filter((id) => Number.isFinite(id)))];
+  protected async getRunInfo(entries: { runId: number; resultId: number }[]): Promise<Map<number, RunEnrichment>> {
+    const info = new Map<number, RunEnrichment>();
     const testApi = await this.getTestApi();
-    await mapWithConcurrency(distinct, RUN_LOOKUP_CONCURRENCY, async (id) => {
+    const runIds = [...new Set(entries.map((e) => e.runId))];
+    for (const id of runIds) {
+      info.set(id, { bugs: new Map(), complete: true });
+    }
+
+    await mapWithConcurrency(runIds, RUN_LOOKUP_CONCURRENCY, async (id) => {
       try {
         const run = await testApi.getTestRunById(this.config.project, id);
-        const results = await this.getAllRunResults(id, ResultDetails.WorkItems);
-        const bugs = new Map<number, number[]>();
-        for (const r of results || []) {
-          if (r.id !== undefined && r.associatedBugs?.length) {
-            bugs.set(r.id, r.associatedBugs.map((b) => Number(b.id)));
-          }
-        }
-        info.set(id, { name: run?.name || undefined, bugs });
+        info.get(id)!.name = run?.name || undefined;
       } catch {
-        // left out: the caller reports it as not looked up
+        info.get(id)!.complete = false;
+      }
+    });
+
+    const distinct = [...new Map(entries.map((e) => [`${e.runId}/${e.resultId}`, e])).values()];
+    await mapWithConcurrency(distinct, RUN_LOOKUP_CONCURRENCY, async ({ runId, resultId }) => {
+      try {
+        const result = await testApi.getTestResultById(this.config.project, runId, resultId, ResultDetails.WorkItems);
+        info.get(runId)!.bugs.set(resultId, (result?.associatedBugs || []).map((b) => Number(b.id)));
+      } catch {
+        info.get(runId)!.complete = false;
       }
     });
     return info;
@@ -1783,10 +1810,9 @@ export class TestExecutionService extends AzureDevOpsService {
             }
           }
           const retainedResults = [...retained.values()].flat();
-          const runInfo = await this.getRunInfo(retainedResults.map((r) => Number(r.testRun?.id)));
-          historyRunsNotLookedUp.push(
-            ...[...new Set(retainedResults.map((r) => Number(r.testRun?.id)))].filter((id) => Number.isFinite(id) && !runInfo.has(id))
-          );
+          const targets = enrichmentTargets(retainedResults);
+          const runInfo = await this.getRunInfo(targets.entries);
+          historyRunsNotLookedUp.push(...targets.runIds.filter((id) => !runInfo.get(id)?.complete));
           history = Object.fromEntries(
             [...retained].map(([pointId, list]) => [
               pointId,
@@ -1839,8 +1865,9 @@ export class TestExecutionService extends AzureDevOpsService {
       );
       const results = response?.results || [];
       // The query leaves the run name blank, so look the names up.
-      const runInfo = await this.getRunInfo(results.map((r) => Number(r.testRun?.id)));
-      const notEnriched = [...new Set(results.map((r) => Number(r.testRun?.id)))].filter((id) => Number.isFinite(id) && !runInfo.has(id));
+      const targets = enrichmentTargets(results);
+      const runInfo = await this.getRunInfo(targets.entries);
+      const notEnriched = targets.runIds.filter((id) => !runInfo.get(id)?.complete);
       return {
         testCaseId: params.testCaseId,
         count: results.length,
