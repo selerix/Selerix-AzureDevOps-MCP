@@ -1504,6 +1504,8 @@ describe('TestExecutionService', () => {
 
         expect(testApi.getTestResultsByQuery.mock.calls.map((c) => c[0].resultsFilter.resultsCount)).toEqual([50, 100]);
         expect((out.points[0].history as unknown[]).length).toBe(3);
+        // only the 3 returned entries are enriched, not the 50 results of the other configuration
+        expect(testApi.getTestRunById.mock.calls.map((c) => c[1]).sort()).toEqual([500, 501, 502]);
         expect(out.historyIncompleteForPoints).toBeUndefined();
       });
 
@@ -1525,6 +1527,32 @@ describe('TestExecutionService', () => {
         expect(Math.max(...counts)).toBe(1000);
         expect(out.historyIncompleteForPoints).toEqual([10]);
         expect(out.points[0].history).toEqual([]);
+        // nothing is returned for the point, so none of the 1000 unrelated runs is looked up
+        expect(testApi.getTestRunById).not.toHaveBeenCalled();
+        expect(testApi.getTestResults).not.toHaveBeenCalled();
+      });
+
+      it('caps each requested point before enriching, so lookups are bounded by points x historyTop', async () => {
+        testPlanApi.getPointsList.mockResolvedValue([
+          { id: 9, testCaseReference: { id: 5, name: 'Save works' } }, { id: 10, testCaseReference: { id: 5, name: 'Save works' } }
+        ]);
+        testApi.getTestResultsByQuery = dataset([...resultsFor('9', 20, 1000), ...resultsFor('10', 20, 2000)]);
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true, historyTop: 2 });
+
+        expect(out.points.map((p) => (p.history as unknown[]).length)).toEqual([2, 2]);
+        expect(testApi.getTestRunById).toHaveBeenCalledTimes(4);
+      });
+
+      it('reports unreadable runs only for entries that are returned', async () => {
+        testPlanApi.getPointsList.mockResolvedValue([{ id: 10, testCaseReference: { id: 5, name: 'Save works' } }]);
+        // run 1001 belongs to the other configuration's results and is never looked up; run 500 is returned
+        testApi.getTestResultsByQuery = dataset([...resultsFor('9', 50, 1000), ...resultsFor('10', 1, 500)]);
+        testApi.getTestRunById.mockImplementation(async (_p: string, id: number) => {
+          if (id === 500) throw new Error('unreadable');
+          return { id, name: `run ${id}` };
+        });
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true });
+        expect(out.historyRunsNotLookedUp).toEqual([500]);
       });
 
       it('gives a point with no results an empty history rather than none', async () => {

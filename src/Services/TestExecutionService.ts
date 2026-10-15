@@ -1563,26 +1563,36 @@ export class TestExecutionService extends AzureDevOpsService {
             results.push(...found.results);
             historyIncompleteForPoints.push(...found.incompletePointIds);
           }
-          const runInfo = await this.getRunInfo(results.map((r) => Number(r.testRun?.id)));
-          historyRunsNotLookedUp.push(
-            ...[...new Set(results.map((r) => Number(r.testRun?.id)))].filter((id) => Number.isFinite(id) && !runInfo.has(id))
-          );
-          history = Object.fromEntries(shown.map((p) => [p.pointId, [] as unknown[]]));
+          // Pick what is shown first - the requested points' results, at most `top` each - and only
+          // then look up run names and bugs, so the lookups (each pages through a run's results)
+          // are spent on entries that are returned, not on the other points' results the query
+          // also brought back.
+          const retained = new Map<number, typeof results>(shown.map((p) => [p.pointId, []]));
           for (const r of results) {
-            const pointId = Number(r.testPoint?.id);
-            if (!shown.some((p) => p.pointId === pointId)) continue;
-            const list = (history[pointId] = history[pointId] || []);
-            if (list.length >= top) continue;
-            list.push({
-              runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
-              runName: runInfo.get(Number(r.testRun?.id))?.name || undefined,
-              resultId: r.id,
-              outcome: r.outcome,
-              runBy: r.runBy?.displayName,
-              completedDate: r.completedDate,
-              associatedBugs: bugsOf(runInfo, r),
-            });
+            const list = retained.get(Number(r.testPoint?.id));
+            if (list && list.length < top) {
+              list.push(r);
+            }
           }
+          const retainedResults = [...retained.values()].flat();
+          const runInfo = await this.getRunInfo(retainedResults.map((r) => Number(r.testRun?.id)));
+          historyRunsNotLookedUp.push(
+            ...[...new Set(retainedResults.map((r) => Number(r.testRun?.id)))].filter((id) => Number.isFinite(id) && !runInfo.has(id))
+          );
+          history = Object.fromEntries(
+            [...retained].map(([pointId, list]) => [
+              pointId,
+              list.map((r) => ({
+                runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
+                runName: runInfo.get(Number(r.testRun?.id))?.name || undefined,
+                resultId: r.id,
+                outcome: r.outcome,
+                runBy: r.runBy?.displayName,
+                completedDate: r.completedDate,
+                associatedBugs: bugsOf(runInfo, r),
+              })),
+            ])
+          );
         } catch (error) {
           historyError = error instanceof Error ? error.message : String(error);
         }
