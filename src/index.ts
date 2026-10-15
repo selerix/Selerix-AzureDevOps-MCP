@@ -2354,6 +2354,7 @@ async function main() {
     allowedTools.has("getTestResult") && server.tool("getTestResult",
       "Read a test result: outcome, comment, failure analysis, associated bugs, attachments, and the test case steps with any recorded step outcomes",
       {
+        iterationId: z.number().optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         includeSteps: z.boolean().optional().describe("Include steps with recorded outcomes (default true)")
@@ -2371,6 +2372,7 @@ async function main() {
     allowedTools.has("setTestStepResults") && server.tool("setTestStepResults",
       "Mark selected steps (or all steps) of a test result as Passed or Failed, optionally with a comment on a failing step",
       {
+        iterationId: z.number().optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         steps: z.array(z.object({
@@ -2428,6 +2430,7 @@ async function main() {
     allowedTools.has("addTestResultAttachment") && server.tool("addTestResultAttachment",
       "Upload a screenshot, screen recording or other file (from a local path) to a test result, or to one of its steps. Capturing the screen is the caller's job; this uploads the file.",
       {
+        iterationId: z.number().optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         filePath: z.string().optional().describe("Absolute path of the local file to upload"),
@@ -2686,6 +2689,7 @@ async function main() {
     allowedTools.has("createBugFromTestRun") && server.tool("createBugFromTestRun",
       "Create a Bug from a test result, with repro steps built from the test steps, outcomes, failing-step comments and attachments, linked to the test result, test case and run",
       {
+        iterationId: z.number().optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         title: z.string().optional().describe("Bug title; defaults to '<test case title> failed'"),
@@ -2709,6 +2713,7 @@ async function main() {
     allowedTools.has("updateBugWithTestRun") && server.tool("updateBugWithTestRun",
       "Add a test result's details to an existing bug as a comment (and optionally append to Repro Steps), and link the bug to the result, test case and run",
       {
+        iterationId: z.number().optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         bugId: z.number().describe("ID of the existing bug"),

@@ -683,6 +683,145 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('a parameterised result with several iterations (data rows)', () => {
+    const iteration = (id: number, outcome: string, actionResults: unknown[], user: string) => ({
+      id, outcome, actionResults, parameters: [{ parameterName: 'user', value: user }]
+    });
+    const passed = (path: string) => ({ actionPath: path, iterationId: 1, outcome: 'Passed' });
+    // row 1 passes, row 2 fails at step 3, row 3 passes
+    const threeRows = () => ({
+      id: 100000, testCase: { id: '5' }, testCaseTitle: 'Save works', outcome: 'Failed', comment: 'c',
+      iterationDetails: [
+        iteration(1, 'Passed', [passed('00000002'), passed('00000003')], 'alice'),
+        iteration(2, 'Failed', [passed('00000002'), { actionPath: '00000003', outcome: 'Failed', errorMessage: 'row 2 broke' }], 'bob'),
+        iteration(3, 'Passed', [passed('00000002'), passed('00000003')], 'carol')
+      ]
+    });
+    beforeEach(() => {
+      testApi.getTestResultById.mockResolvedValue(threeRows());
+    });
+
+    it('shows the failing row, not the passing first one, and says which row it is', async () => {
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(out.iterationId).toBe(2);
+      expect(out.iterations).toEqual([{ id: 1, outcome: 'Passed' }, { id: 2, outcome: 'Failed' }, { id: 3, outcome: 'Passed' }]);
+      expect(out.steps!.find((s) => s.stepId === 3)).toEqual(expect.objectContaining({ outcome: 'Failed', comment: 'row 2 broke' }));
+    });
+
+    it('shows any row that is asked for', async () => {
+      const first = await service.getTestResult({ runId: 77, resultId: 100000, iterationId: 1 });
+      expect(first.iterationId).toBe(1);
+      expect(first.steps!.find((s) => s.stepId === 3)!.outcome).toBe('Passed');
+      const third = await service.getTestResult({ runId: 77, resultId: 100000, iterationId: 3 });
+      expect(third.steps!.find((s) => s.stepId === 3)!.outcome).toBe('Passed');
+    });
+
+    it('uses the first row when none of them failed', async () => {
+      const allPassed = threeRows();
+      allPassed.iterationDetails[1] = iteration(2, 'Passed', [passed('00000002'), passed('00000003')], 'bob');
+      testApi.getTestResultById.mockResolvedValue(allPassed);
+      expect((await service.getTestResult({ runId: 77, resultId: 100000 })).iterationId).toBe(1);
+    });
+
+    it('rejects an iteration the result does not have, listing the ones it has', async () => {
+      await expect(service.getTestResult({ runId: 77, resultId: 100000, iterationId: 9 })).rejects.toThrow(
+        'Result 100000 has no iteration 9. Iterations: 1 (Passed), 2 (Failed), 3 (Passed)'
+      );
+    });
+
+    it('reports nothing extra for a result with a single iteration', async () => {
+      testApi.getTestResultById.mockResolvedValue({ ...threeRows(), iterationDetails: [iteration(1, 'Passed', [passed('00000002')], 'alice')] });
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(out.iterationId).toBeUndefined();
+      expect(out.iterations).toBeUndefined();
+    });
+
+    it('refuses to change steps without being told which row', async () => {
+      await expect(
+        service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 2, outcome: 'Passed' }] })
+      ).rejects.toThrow('Result 100000 has 3 iterations (1 (Passed), 2 (Failed), 3 (Passed)); pass iterationId to choose the one to change');
+      expect(testApi.updateTestResults).not.toHaveBeenCalled();
+    });
+
+    it('changes only the chosen row and sends the others back as they were', async () => {
+      await service.setTestStepResults({ runId: 77, resultId: 100000, iterationId: 2, steps: [{ stepId: 3, outcome: 'Passed' }] });
+
+      const sent = testApi.updateTestResults.mock.calls[0][0][0].iterationDetails as any[];
+      expect(sent.map((i) => i.id).sort()).toEqual([1, 2, 3]);
+      expect(sent.find((i) => i.id === 1)).toEqual(threeRows().iterationDetails[0]);
+      expect(sent.find((i) => i.id === 3)).toEqual(threeRows().iterationDetails[2]);
+      const changed = sent.find((i) => i.id === 2);
+      expect(changed.actionResults.find((a: any) => a.actionPath === '00000003')).toEqual(expect.objectContaining({ outcome: 'Passed', iterationId: 2 }));
+    });
+
+    it('refuses to attach to a step without being told which row, and attaches to the chosen row', async () => {
+      await expect(
+        service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt', stepId: 3 })
+      ).rejects.toThrow('pass iterationId');
+      await service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt', stepId: 3, iterationId: 2 });
+      expect(testApi.createTestIterationResultAttachment).toHaveBeenCalledWith(expect.anything(), 'Engineering', 77, 100000, 2, '00000003');
+    });
+
+    it('does not need a choice for a result-level attachment', async () => {
+      await service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt' });
+      expect(testApi.createTestResultAttachment).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads each row\'s shared steps at the revision recorded on that row', async () => {
+      witApi.getRevision = jest.fn().mockImplementation(async (id: number, rev: number) =>
+        id === 5
+          ? { id: 5, rev, fields: { 'Microsoft.VSTS.TCM.Steps': SHARED_STEPS_XML } }
+          : { id: 49, rev, fields: { 'System.Title': `Login r${rev}`, 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML } });
+      testApi.getTestResultById.mockResolvedValue({
+        id: 100000, testCase: { id: '5' }, testCaseRevision: 3,
+        iterationDetails: [
+          iteration(1, 'Passed', [{ actionPath: '00000002', outcome: 'Passed', sharedStepModel: { id: 49, revision: 4 } }], 'alice'),
+          iteration(2, 'Failed', [{ actionPath: '00000002', outcome: 'Failed', sharedStepModel: { id: 49, revision: 7 } }], 'bob')
+        ]
+      });
+      const second = await service.getTestResult({ runId: 77, resultId: 100000, iterationId: 2 });
+      expect(witApi.getRevision).toHaveBeenCalledWith(49, 7, undefined, 'Engineering');
+      expect(second.steps![1].action).toBe('Shared steps: Login r7');
+
+      const first = await service.getTestResult({ runId: 77, resultId: 100000, iterationId: 1 });
+      expect(witApi.getRevision).toHaveBeenCalledWith(49, 4, undefined, 'Engineering');
+      expect(first.steps![1].action).toBe('Shared steps: Login r4');
+    });
+
+    describe('in a bug', () => {
+      const reproOf = () => witApi.createWorkItem.mock.calls[0][1].find((p: any) => p.path === '/fields/Microsoft.VSTS.TCM.ReproSteps').value as string;
+
+      it('reports the failing row, with its data, instead of the passing first one', async () => {
+        await service.createBugFromTestRun({ runId: 77, resultId: 100000 });
+        expect(reproOf()).toContain('<b>Iteration 2</b> of 3 (user=bob)');
+        expect(reproOf()).toContain('row 2 broke');
+        expect(reproOf()).toContain('[FAILED]');
+      });
+
+      it('reports a chosen row instead', async () => {
+        await service.createBugFromTestRun({ runId: 77, resultId: 100000, iterationId: 1 });
+        expect(reproOf()).toContain('<b>Iteration 1</b> of 3 (user=alice)');
+        expect(reproOf()).not.toContain('row 2 broke');
+      });
+
+      it('updating a bug takes the same choice', async () => {
+        witApi.getWorkItem.mockImplementation(async (id: number) =>
+          id === 700
+            ? { id: 700, rev: 1, fields: {}, relations: [] }
+            : { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': STEPS_XML, 'System.Title': 'Save works' } });
+        await service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000, iterationId: 3 });
+        const history = witApi.updateWorkItem.mock.calls[0][1].find((p: any) => p.path === '/fields/System.History').value as string;
+        expect(history).toContain('<b>Iteration 3</b> of 3 (user=carol)');
+      });
+
+      it('does not mention iterations for a result with one', async () => {
+        testApi.getTestResultById.mockResolvedValue({ ...threeRows(), iterationDetails: [iteration(1, 'Failed', [passed('00000002')], 'alice')] });
+        await service.createBugFromTestRun({ runId: 77, resultId: 100000 });
+        expect(reproOf()).not.toContain('Iteration');
+      });
+    });
+  });
+
   describe('steps as they were when the result was run', () => {
     // The test case was edited after the run: revision 3 had steps 2 and 3, the latest has "Latest only" too.
     const OLD_STEPS = STEPS_XML;

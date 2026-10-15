@@ -270,6 +270,11 @@ Notes:
   recorded, and each shared step set at the revision recorded on its reference row. A test case
   edited after a run therefore does not change how older results read. A result with no recorded
   revision, or a revision that cannot be read, uses the latest steps.
+- A parameterised result has one iteration per data row, each with its own step outcomes. `getTestResult`
+  lists them (`iterations`) and reports which one its steps belong to (`iterationId`); without an
+  `iterationId` it shows the first failing row, else the first. Bug reports follow the same rule and
+  say which row they describe. Changing step outcomes or attaching to a step refuses to guess: with
+  several iterations it needs `iterationId`, and the other iterations are sent back unchanged.
 - Edits to one result (comment, outcome, step marks, analysis, work item links) are queued per result
   inside the server, so calls made at the same moment do not overwrite each other. This covers calls
   to this server only; an edit made in the web UI or by another server at the same time can still

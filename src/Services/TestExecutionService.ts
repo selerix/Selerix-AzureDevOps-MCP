@@ -35,6 +35,7 @@ import {
   TestCaseResult,
   TestRun,
   TestActionResultModel,
+  TestIterationDetailsModel,
   TestAttachmentRequestModel,
 } from "azure-devops-node-api/interfaces/TestInterfaces";
 import {
@@ -741,13 +742,45 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   /**
+   * Pick the iteration (one data row of a parameterised test) that an operation applies to. A
+   * result can have several, each with its own step outcomes, and taking the first would hide a
+   * failure in a later row or write to the wrong one.
+   *  - an explicit iterationId is used as given (and must exist);
+   *  - a result with one iteration, or none yet, needs no choice;
+   *  - with several and no choice, a read picks the first failing iteration (else the first), and
+   *    says which it picked; a write refuses to guess and lists the iterations to choose from.
+   */
+  protected selectIteration(result: TestCaseResult, requestedId: number | undefined, mode: "read" | "write") {
+    const iterations = result.iterationDetails || [];
+    const list = iterations.map((i) => `${i.id} (${i.outcome ?? "no outcome"})`).join(", ") || "none";
+    if (requestedId !== undefined) {
+      const found = iterations.find((i) => i.id === requestedId);
+      if (!found) {
+        throw new Error(`Result ${result.id} has no iteration ${requestedId}. Iterations: ${list}`);
+      }
+      return { iteration: found, id: requestedId, total: iterations.length };
+    }
+    if (iterations.length <= 1) {
+      return { iteration: iterations[0], id: iterations[0]?.id ?? 1, total: iterations.length };
+    }
+    if (mode === "write") {
+      throw new Error(
+        `Result ${result.id} has ${iterations.length} iterations (${list}); pass iterationId to choose the one to change`
+      );
+    }
+    const failing = iterations.find((i) => i.outcome === "Failed" || (i.actionResults || []).some((a) => a.outcome === "Failed"));
+    const chosen = failing ?? iterations[0];
+    return { iteration: chosen, id: chosen.id!, total: iterations.length };
+  }
+
+  /**
    * The steps a result was run against: its test case at the revision it recorded, with each
    * shared step set at the revision recorded on the reference row. A test case or shared set
    * edited after the run would otherwise show outcomes against instructions never executed, and
    * step updates and attachments could resolve to the wrong step.
    */
-  protected async getStepsForResult(result: TestCaseResult): Promise<ParsedTestStep[]> {
-    const recorded = result.iterationDetails?.[0]?.actionResults || [];
+  protected async getStepsForResult(result: TestCaseResult, iteration?: TestIterationDetailsModel): Promise<ParsedTestStep[]> {
+    const recorded = iteration?.actionResults || [];
     const sharedRevisions = new Map<number, number>();
     for (const a of recorded) {
       if (a.sharedStepModel?.id && a.sharedStepModel.revision) {
@@ -822,13 +855,14 @@ export class TestExecutionService extends AzureDevOpsService {
       const testApi = await this.getTestApi();
       const result = await this.getResultWithIterations(params.runId, params.resultId);
       const attachments = await testApi.getTestResultAttachments(this.config.project, params.runId, params.resultId);
+      const selected = this.selectIteration(result, params.iterationId, "read");
 
       let steps;
       let unmatchedStepResults;
       if (params.includeSteps !== false && result.testCase?.id) {
-        const actionResults = result.iterationDetails?.[0]?.actionResults || [];
+        const actionResults = selected.iteration?.actionResults || [];
         const recorded = new Map(actionResults.map((a) => [a.actionPath?.toLowerCase(), a]));
-        const testCaseSteps = await this.getStepsForResult(result);
+        const testCaseSteps = await this.getStepsForResult(result, selected.iteration);
         // Outcomes recorded under a path no listed step maps to (e.g. shared-step children, or
         // another client's path format) would otherwise be silently invisible here.
         const knownPaths = new Set(testCaseSteps.map((s) => s.actionPath));
@@ -862,6 +896,9 @@ export class TestExecutionService extends AzureDevOpsService {
         analysisOwner: result.owner ? { id: result.owner.id, displayName: result.owner.displayName, uniqueName: result.owner.uniqueName } : undefined,
         runBy: result.runBy?.displayName,
         associatedBugs: (result.associatedBugs || []).map((b) => Number(b.id)),
+        // A parameterised result has one iteration per data row; the steps below are those of this one.
+        iterationId: selected.total > 1 ? selected.id : undefined,
+        iterations: selected.total > 1 ? (result.iterationDetails || []).map((i) => ({ id: i.id, outcome: i.outcome })) : undefined,
         steps,
         unmatchedStepResults,
         attachments: (attachments || []).map((a) => ({ id: a.id, fileName: a.fileName, size: a.size, url: a.url, comment: a.comment })),
@@ -886,7 +923,9 @@ export class TestExecutionService extends AzureDevOpsService {
       if (!result.testCase?.id) {
         throw new Error(`Result ${params.resultId} has no test case`);
       }
-      const steps = await this.getStepsForResult(result);
+      // a write never guesses which data row of a parameterised result it applies to
+      const selected = this.selectIteration(result, params.iterationId, "write");
+      const steps = await this.getStepsForResult(result, selected.iteration);
       const byId = new Map(steps.map((s) => [s.identifier, s]));
 
       const updates = new Map<string, { outcome: string; comment?: string }>();
@@ -904,8 +943,8 @@ export class TestExecutionService extends AzureDevOpsService {
       }
 
       // Keep outcomes already recorded for steps this call doesn't touch.
-      const iteration = result.iterationDetails?.[0];
-      const iterationId = iteration?.id ?? 1;
+      const iteration = selected.iteration;
+      const iterationId = selected.id;
       const now = new Date();
       const actionResults = new Map<string, TestActionResultModel>(
         (iteration?.actionResults || []).map((a) => [a.actionPath!.toLowerCase(), a])
@@ -962,7 +1001,11 @@ export class TestExecutionService extends AzureDevOpsService {
         [
           await this.buildResultUpdate(result, {
             id: params.resultId,
-            iterationDetails: [{ id: iterationId, outcome: iterationOutcome, actionResults: all }],
+            // the other iterations are sent back as they are, so that writing one cannot drop the rest
+            iterationDetails: [
+              ...(result.iterationDetails || []).filter((i) => i.id !== iterationId),
+              { id: iterationId, outcome: iterationOutcome, actionResults: all },
+            ],
           }),
         ],
         this.config.project,
@@ -1079,12 +1122,13 @@ export class TestExecutionService extends AzureDevOpsService {
       let reference;
       if (params.stepId !== undefined) {
         const result = await this.getResultWithIterations(params.runId, params.resultId);
-        const step = (await this.getStepsForResult(result)).find((s) => s.identifier === String(params.stepId));
+        const selected = this.selectIteration(result, params.iterationId, "write");
+        const step = (await this.getStepsForResult(result, selected.iteration)).find((s) => s.identifier === String(params.stepId));
         if (!step) {
           throw new Error(`Step ${params.stepId} not found on test case ${result.testCase?.id}`);
         }
         reference = await testApi.createTestIterationResultAttachment(
-          request, this.config.project, params.runId, params.resultId, result.iterationDetails?.[0]?.id ?? 1, step.actionPath
+          request, this.config.project, params.runId, params.resultId, selected.id, step.actionPath
         );
       } else {
         reference = await testApi.createTestResultAttachment(request, this.config.project, params.runId, params.resultId);
@@ -1858,7 +1902,7 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   /** Gather everything a bug needs from a test result: steps, outcomes, comments, links. */
-  private async buildFailureReport(runId: number, resultId: number, additionalDetails?: string) {
+  private async buildFailureReport(runId: number, resultId: number, additionalDetails?: string, iterationId?: number) {
     const testApi = await this.getTestApi();
     const witApi = await this.getWorkItemTrackingApi();
     const result = await this.getResultWithIterations(runId, resultId);
@@ -1870,8 +1914,11 @@ export class TestExecutionService extends AzureDevOpsService {
       throw new Error(`Result ${resultId} in run ${runId} has no test case`);
     }
     const testCase = await witApi.getWorkItem(testCaseId, undefined, undefined, undefined, this.config.project);
-    const steps = await this.getStepsForResult(result);
-    const recorded = new Map((result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath?.toLowerCase(), a]));
+    // the iteration (data row) reported: the failing one when there are several and none was chosen
+    const selected = this.selectIteration(result, iterationId, "read");
+    const steps = await this.getStepsForResult(result, selected.iteration);
+    const recorded = new Map((selected.iteration?.actionResults || []).map((a) => [a.actionPath?.toLowerCase(), a]));
+    const data = (selected.iteration?.parameters || []).map((p) => `${p.parameterName}=${p.value ?? ""}`).join(", ");
 
     const title = result.testCaseTitle || testCase.fields?.["System.Title"] || `Test case ${testCaseId}`;
     const resultUrl = `${this.webBaseUrl()}/_testManagement/runs?runId=${runId}&_a=resultSummary&resultId=${resultId}`;
@@ -1890,6 +1937,9 @@ export class TestExecutionService extends AzureDevOpsService {
       additionalDetails ? `<p>${e(additionalDetails)}</p>` : "",
       `<p>Test case <b>${testCaseId}</b>: ${e(title)}<br/>Outcome: <b>${e(result.outcome || "Unknown")}</b>` +
         `<br/>Run: <a href="${e(resultUrl)}">${e(run.name || `Run ${runId}`)} (result ${resultId})</a></p>`,
+      selected.total > 1
+        ? `<p><b>Iteration ${selected.id}</b> of ${selected.total}${data ? ` (${e(data)})` : ""}</p>`
+        : "",
       result.comment ? `<p><b>Result comment:</b> ${e(result.comment)}</p>` : "",
       result.errorMessage ? `<p><b>Error:</b> ${e(result.errorMessage)}</p>` : "",
       stepRows.length ? `<p><b>Steps:</b></p><ul>${stepRows.join("")}</ul>` : "",
@@ -1925,7 +1975,7 @@ export class TestExecutionService extends AzureDevOpsService {
   public async createBugFromTestRun(params: CreateBugFromTestRunParams) {
     try {
       const witApi = await this.getWorkItemTrackingApi();
-      const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails);
+      const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails, params.iterationId);
 
       const fields: Record<string, unknown> = {
         "System.Title": params.title || `${report.title} failed`,
@@ -1967,7 +2017,7 @@ export class TestExecutionService extends AzureDevOpsService {
   public async updateBugWithTestRun(params: UpdateBugWithTestRunParams) {
     try {
       const witApi = await this.getWorkItemTrackingApi();
-      const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails);
+      const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails, params.iterationId);
       // The Repro Steps text is read, extended and written back, so two updates overlapping on one
       // bug could overwrite each other's report. The update is therefore guarded by a test of the
       // revision it was built from and rebuilt from a fresh read when the bug has changed since.

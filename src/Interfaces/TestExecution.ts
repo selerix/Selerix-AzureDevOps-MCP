@@ -81,6 +81,12 @@ export interface TestResultRef {
 }
 
 export interface GetTestResultParams extends TestResultRef {
+  /**
+   * Which iteration (data row) of a parameterised result to use, as listed in getTestResult's
+   * iterations. Not needed for a result with a single iteration. Without it, reads and bug reports
+   * use the first failing iteration; changes and step attachments refuse to guess.
+   */
+  iterationId?: number;
   /** Include the test case's steps merged with any outcomes already recorded (default true) */
   includeSteps?: boolean;
 }
@@ -94,6 +100,12 @@ export interface StepOutcomeUpdate {
 }
 
 export interface SetTestStepResultsParams extends TestResultRef {
+  /**
+   * Which iteration (data row) of a parameterised result to use, as listed in getTestResult's
+   * iterations. Not needed for a result with a single iteration. Without it, reads and bug reports
+   * use the first failing iteration; changes and step attachments refuse to guess.
+   */
+  iterationId?: number;
   /** Selected steps to mark */
   steps?: StepOutcomeUpdate[];
   /** Mark every step of the test case with this outcome (explicit `steps` entries still win) */
@@ -125,6 +137,12 @@ export interface AttachmentContentParams {
 }
 
 export interface AddTestResultAttachmentParams extends TestResultRef, AttachmentContentParams {
+  /**
+   * Which iteration (data row) of a parameterised result to use, as listed in getTestResult's
+   * iterations. Not needed for a result with a single iteration. Without it, reads and bug reports
+   * use the first failing iteration; changes and step attachments refuse to guess.
+   */
+  iterationId?: number;
   kind?: TestAttachmentKind;
   /** Attach to a single step instead of the whole result */
   stepId?: number | string;
@@ -207,6 +225,12 @@ export interface LinkTestRunToWorkItemsParams {
 }
 
 export interface CreateBugFromTestRunParams extends TestResultRef {
+  /**
+   * Which iteration (data row) of a parameterised result to use, as listed in getTestResult's
+   * iterations. Not needed for a result with a single iteration. Without it, reads and bug reports
+   * use the first failing iteration; changes and step attachments refuse to guess.
+   */
+  iterationId?: number;
   /** Defaults to "<test case title> failed" */
   title?: string;
   /** Defaults to the test case's area path */
@@ -222,6 +246,12 @@ export interface CreateBugFromTestRunParams extends TestResultRef {
 }
 
 export interface UpdateBugWithTestRunParams extends TestResultRef {
+  /**
+   * Which iteration (data row) of a parameterised result to use, as listed in getTestResult's
+   * iterations. Not needed for a result with a single iteration. Without it, reads and bug reports
+   * use the first failing iteration; changes and step attachments refuse to guess.
+   */
+  iterationId?: number;
   bugId: number;
   /** Extra text placed above the generated summary */
   additionalDetails?: string;
