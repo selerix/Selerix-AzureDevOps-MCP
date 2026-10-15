@@ -185,6 +185,29 @@ export interface LinkTestRunToWorkItemsParams {
   addRunHyperlink?: boolean;
 }
 
+export interface CreateBugFromTestRunParams extends TestResultRef {
+  /** Defaults to "<test case title> failed" */
+  title?: string;
+  /** Defaults to the test case's area path */
+  areaPath?: string;
+  /** Defaults to the test case's iteration path */
+  iterationPath?: string;
+  assignedTo?: string;
+  /** e.g. "2 - High" */
+  severity?: string;
+  priority?: number;
+  /** Extra text placed above the generated repro steps */
+  additionalDetails?: string;
+}
+
+export interface UpdateBugWithTestRunParams extends TestResultRef {
+  bugId: number;
+  /** Extra text placed above the generated summary */
+  additionalDetails?: string;
+  /** Also append the generated repro steps to the bug's Repro Steps field (default false) */
+  appendToReproSteps?: boolean;
+}
+
 export interface StartedTestResult {
   resultId: number;
   testCaseId?: number;

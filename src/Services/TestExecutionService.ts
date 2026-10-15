@@ -11,6 +11,8 @@ import * as path from "path";
 import { Operation } from "azure-devops-node-api/interfaces/common/VSSInterfaces";
 import { WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces";
 import {
+  CreateBugFromTestRunParams,
+  UpdateBugWithTestRunParams,
   GetTestCaseExecutionHistoryParams,
   GetTestRunsParams,
   LinkTestRunToWorkItemsParams,
@@ -57,6 +59,10 @@ const HTML_ENTITIES: Record<string, string> = {
   "&nbsp;": " ",
   "&amp;": "&",
 };
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 
 /** Decode the (possibly double-encoded) HTML ADO stores in step text down to plain text. */
 function htmlToText(value: string): string {
@@ -849,5 +855,133 @@ export class TestExecutionService extends AzureDevOpsService {
     return true;
   }
 
-  // __METHODS__
+  private webBaseUrl(): string {
+    const base = this.config.isOnPremises && this.config.collection ? `${this.config.orgUrl}/${this.config.collection}` : this.config.orgUrl;
+    return `${base.replace(/\/+$/, "")}/${encodeURIComponent(this.config.project)}`;
+  }
+
+  /** Gather everything a bug needs from a test result: steps, outcomes, comments, links. */
+  private async buildFailureReport(runId: number, resultId: number, additionalDetails?: string) {
+    const testApi = await this.getTestApi();
+    const witApi = await this.getWorkItemTrackingApi();
+    const result = await this.getResultWithIterations(runId, resultId);
+    const run = await testApi.getTestRunById(this.config.project, runId);
+    const attachments = (await testApi.getTestResultAttachments(this.config.project, runId, resultId)) || [];
+
+    const testCaseId = result.testCase?.id ? Number(result.testCase.id) : undefined;
+    if (testCaseId === undefined) {
+      throw new Error(`Result ${resultId} in run ${runId} has no test case`);
+    }
+    const testCase = await witApi.getWorkItem(testCaseId, undefined, undefined, undefined, this.config.project);
+    const steps = parseTestSteps(testCase.fields?.["Microsoft.VSTS.TCM.Steps"]);
+    const recorded = new Map((result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath, a]));
+
+    const title = result.testCaseTitle || testCase.fields?.["System.Title"] || `Test case ${testCaseId}`;
+    const resultUrl = `${this.webBaseUrl()}/_testManagement/runs?runId=${runId}&_a=resultSummary&resultId=${resultId}`;
+    const e = escapeHtml;
+
+    const stepRows = steps.map((s) => {
+      const r = recorded.get(s.actionPath);
+      const mark = r?.outcome === "Failed" ? " <b>[FAILED]</b>" : r?.outcome === "Passed" ? " [passed]" : "";
+      const comment = r?.outcome === "Failed" && r.errorMessage ? `<br/><i>Comment:</i> ${e(r.errorMessage)}` : "";
+      const expected = s.expectedResult ? `<br/><i>Expected:</i> ${e(s.expectedResult)}` : "";
+      return `<li>${e(s.action)}${mark}${expected}${comment}</li>`;
+    });
+
+    const parts = [
+      additionalDetails ? `<p>${e(additionalDetails)}</p>` : "",
+      `<p>Test case <b>${testCaseId}</b>: ${e(title)}<br/>Outcome: <b>${e(result.outcome || "Unknown")}</b>` +
+        `<br/>Run: <a href="${e(resultUrl)}">${e(run.name || `Run ${runId}`)} (result ${resultId})</a></p>`,
+      result.comment ? `<p><b>Result comment:</b> ${e(result.comment)}</p>` : "",
+      result.errorMessage ? `<p><b>Error:</b> ${e(result.errorMessage)}</p>` : "",
+      stepRows.length ? `<p><b>Steps:</b></p><ol>${stepRows.join("")}</ol>` : "",
+      attachments.length
+        ? `<p><b>Attachments:</b></p><ul>${attachments.map((a) => `<li><a href="${e(a.url || "")}">${e(a.fileName || String(a.id))}</a></li>`).join("")}</ul>`
+        : "",
+    ];
+
+    return {
+      html: parts.filter(Boolean).join(""),
+      title,
+      testCaseId,
+      testCaseUrl: testCase.url,
+      areaPath: testCase.fields?.["System.AreaPath"] as string | undefined,
+      iterationPath: testCase.fields?.["System.IterationPath"] as string | undefined,
+      resultUrl,
+      runName: run.name,
+    };
+  }
+
+  /** Relations tying a work item to the test result, test case and run. */
+  private resultRelations(report: { testCaseUrl?: string; resultUrl: string; runName?: string }, runId: number, resultId: number) {
+    const relations: { rel: string; url: string; attributes: Record<string, string> }[] = [
+      { rel: "ArtifactLink", url: `vstfs:///TestManagement/TcmResult/${runId}.${resultId}`, attributes: { name: "Test Result" } },
+      { rel: "Hyperlink", url: report.resultUrl, attributes: { comment: `Test run ${runId}: ${report.runName ?? ""}`.trim() } },
+    ];
+    if (report.testCaseUrl) {
+      relations.push({ rel: "Microsoft.VSTS.Common.TestedBy-Forward", url: report.testCaseUrl, attributes: { comment: "Test case that found this bug" } });
+    }
+    return relations;
+  }
+
+  public async createBugFromTestRun(params: CreateBugFromTestRunParams) {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+      const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails);
+
+      const fields: Record<string, unknown> = {
+        "System.Title": params.title || `${report.title} failed`,
+        "Microsoft.VSTS.TCM.ReproSteps": report.html,
+      };
+      const areaPath = params.areaPath || report.areaPath;
+      const iterationPath = params.iterationPath || report.iterationPath;
+      if (areaPath) fields["System.AreaPath"] = areaPath;
+      if (iterationPath) fields["System.IterationPath"] = iterationPath;
+      if (params.assignedTo) fields["System.AssignedTo"] = params.assignedTo;
+      if (params.severity) fields["Microsoft.VSTS.Common.Severity"] = params.severity;
+      if (params.priority !== undefined) fields["Microsoft.VSTS.Common.Priority"] = params.priority;
+
+      const patch = [
+        ...Object.entries(fields).map(([name, value]) => ({ op: Operation.Add, path: `/fields/${name}`, value })),
+        ...this.resultRelations(report, params.runId, params.resultId).map((value) => ({ op: Operation.Add, path: "/relations/-", value })),
+      ];
+      const bug = await witApi.createWorkItem(undefined, patch, this.config.project, "Bug");
+
+      await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [bug.id!], addRunHyperlink: false });
+      return { bugId: bug.id, title: fields["System.Title"], url: bug._links?.html?.href ?? bug.url, runId: params.runId, resultId: params.resultId };
+    } catch (error) {
+      console.error(`Error creating bug from test result ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
+  public async updateBugWithTestRun(params: UpdateBugWithTestRunParams) {
+    try {
+      const witApi = await this.getWorkItemTrackingApi();
+      const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails);
+      const bug = await witApi.getWorkItem(params.bugId, undefined, undefined, WorkItemExpand.All, this.config.project);
+
+      const patch: { op: Operation; path: string; value: unknown }[] = [
+        { op: Operation.Add, path: "/fields/System.History", value: report.html },
+      ];
+      if (params.appendToReproSteps) {
+        const current = (bug.fields?.["Microsoft.VSTS.TCM.ReproSteps"] as string) || "";
+        patch.push({ op: Operation.Add, path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: `${current}<hr/>${report.html}` });
+      }
+      const existing = bug.relations || [];
+      for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
+        if (!existing.some((r) => r.rel === relation.rel && r.url === relation.url)) {
+          patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
+        }
+      }
+      await witApi.updateWorkItem(undefined, patch, params.bugId, this.config.project);
+
+      await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false });
+      return { bugId: params.bugId, runId: params.runId, resultId: params.resultId, appendedToReproSteps: !!params.appendToReproSteps };
+    } catch (error) {
+      console.error(`Error updating bug ${params.bugId} with test result ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
 }
