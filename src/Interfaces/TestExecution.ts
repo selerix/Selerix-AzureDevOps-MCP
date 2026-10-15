@@ -24,3 +24,49 @@ export interface ResolvedTestPoint {
   suiteId?: number;
   planId: number;
 }
+
+export type TestType = "manual" | "automated";
+export type TestRunner = "webApplication" | "releaseStage";
+
+export interface ListReleaseDefinitionsParams {
+  searchText?: string;
+  top?: number;
+}
+
+export interface GetReleaseDefinitionDetailsParams {
+  releaseDefinitionId: number;
+}
+
+export interface StartTestRunParams {
+  /** Test case work item ids to run (one or many) */
+  testCaseIds: number[];
+  planId: number;
+  /** Suite holding the test cases; looked up per test case within the plan when omitted */
+  suiteId?: number;
+  testType: TestType;
+  /** manual -> webApplication (web runner); automated -> releaseStage */
+  runner: TestRunner;
+  runName?: string;
+
+  // automated / releaseStage only
+  buildPipelineId?: number;
+  /** Build id; takes precedence over buildNumber */
+  buildId?: number;
+  /** Build number such as "20261015.1"; the latest completed build is used when neither is given */
+  buildNumber?: string;
+  releasePipelineId?: number;
+  /** Name of the release pipeline stage (environment) to deploy and run the tests in */
+  stageName?: string;
+  /** Alias of the release artifact the build is bound to; inferred from buildPipelineId when omitted */
+  artifactAlias?: string;
+  /** Release variable that receives the test run id so the stage's test task can pick it up */
+  runIdVariableName?: string;
+}
+
+export interface StartedTestResult {
+  resultId: number;
+  testCaseId?: number;
+  pointId?: number;
+  outcome?: string;
+  state?: string;
+}
