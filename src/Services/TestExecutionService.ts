@@ -903,6 +903,32 @@ export class TestExecutionService extends AzureDevOpsService {
         });
       }
 
+      // Marking a step inside a shared set must also pin the set's revision on its reference row
+      // (sharedStepModel), whether or not the row itself is marked. Otherwise, if the set is edited
+      // later, the recorded outcome would be shown against instructions that were never run. An
+      // existing row keeps its outcome and gains the revision; a row that is not there yet is
+      // created with no outcome of its own.
+      for (const actionPath of updates.keys()) {
+        const step = steps.find((s) => s.actionPath === actionPath)!;
+        const parent = step.parentIdentifier
+          ? steps.find((s) => s.identifier === step.parentIdentifier && s.type === "SharedStepReference")
+          : undefined;
+        if (!parent || parent.sharedStepRevision === undefined) {
+          continue; // not inside a shared set, or its revision is unknown and must not be guessed
+        }
+        const existingParent = actionResults.get(parent.actionPath);
+        if (existingParent?.sharedStepModel?.revision) {
+          continue; // already pinned, at the revision the result was first recorded against
+        }
+        const sharedStepModel = { id: parent.sharedStepId!, revision: parent.sharedStepRevision };
+        actionResults.set(
+          parent.actionPath,
+          existingParent
+            ? { ...existingParent, sharedStepModel }
+            : { actionPath: parent.actionPath, iterationId, stepIdentifier: parent.identifier, sharedStepModel, outcome: "None" }
+        );
+      }
+
       const all = [...actionResults.values()];
       const iterationOutcome = all.some((a) => a.outcome === "Failed")
         ? "Failed"

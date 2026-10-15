@@ -727,6 +727,73 @@ describe('TestExecutionService', () => {
       expect(out.unmatchedStepResults).toBeUndefined();
     });
 
+    describe('recording only a step inside a shared set', () => {
+      const writtenActionResults = () => testApi.updateTestResults.mock.calls[0][0][0].iterationDetails[0].actionResults as any[];
+
+      it('pins the set\'s revision on its reference row, which gets no outcome of its own', async () => {
+        testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+        await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: '2;2', outcome: 'Failed', comment: 'bad password' }] });
+
+        const parent = writtenActionResults().find((a) => a.actionPath === '00000002');
+        expect(parent).toEqual(expect.objectContaining({ stepIdentifier: '2', sharedStepModel: { id: 49, revision: 4 }, outcome: 'None' }));
+        expect(writtenActionResults().find((a) => a.actionPath === '0000000200000002')).toEqual(
+          expect.objectContaining({ outcome: 'Failed', errorMessage: 'bad password' })
+        );
+      });
+
+      it('keeps the outcome a reference row already has and adds the revision to it', async () => {
+        testApi.getTestResultById.mockResolvedValue(resultWithIteration([{ actionPath: '00000002', iterationId: 1, stepIdentifier: '2', outcome: 'Passed' }]));
+        await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: '2;1', outcome: 'Passed' }] });
+        expect(writtenActionResults().find((a) => a.actionPath === '00000002')).toEqual(
+          expect.objectContaining({ outcome: 'Passed', sharedStepModel: { id: 49, revision: 4 } })
+        );
+      });
+
+      it('does not move a revision that was already pinned', async () => {
+        witApi.getWorkItem.mockImplementation(async (id: number) =>
+          id === 49
+            ? { id: 49, rev: 9, fields: { 'System.Title': 'Login', 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML } }
+            : { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': SHARED_STEPS_XML, 'System.Title': 'Save works' } });
+        witApi.getRevision = jest.fn().mockResolvedValue({ id: 49, rev: 2, fields: { 'System.Title': 'Login', 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML } });
+        testApi.getTestResultById.mockResolvedValue(
+          resultWithIteration([{ actionPath: '00000002', iterationId: 1, stepIdentifier: '2', outcome: 'Passed', sharedStepModel: { id: 49, revision: 2 } }])
+        );
+        await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: '2;1', outcome: 'Passed' }] });
+        expect(writtenActionResults().find((a) => a.actionPath === '00000002').sharedStepModel).toEqual({ id: 49, revision: 2 });
+      });
+
+      it('leaves the outcome tied to the instructions that were run when the set is edited afterwards', async () => {
+        // a stand-in for the stored result: the write below is what a later read sees
+        let stored: any = resultWithIteration();
+        testApi.getTestResultById.mockImplementation(async () => JSON.parse(JSON.stringify(stored)));
+        testApi.updateTestResults.mockImplementation(async (updates: any[]) => {
+          stored = { ...stored, iterationDetails: updates[0].iterationDetails };
+          return [stored];
+        });
+
+        // 1. only the child is recorded, while the shared set is at revision 4
+        await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: '2;2', outcome: 'Failed', comment: 'bad password' }] });
+
+        // 2. the shared set is edited: revision 9 now says something else
+        witApi.getWorkItem.mockImplementation(async (id: number) =>
+          id === 49
+            ? { id: 49, rev: 9, fields: { 'System.Title': 'Login (edited)', 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML.replace('Sign in', 'Sign in with SSO') } }
+            : { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': SHARED_STEPS_XML, 'System.Title': 'Save works' } });
+        witApi.getRevision = jest.fn().mockImplementation(async (id: number, rev: number) => {
+          expect(id).toBe(49);
+          expect(rev).toBe(4); // the revision pinned by step 1, not the latest
+          return { id: 49, rev: 4, fields: { 'System.Title': 'Login', 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML } };
+        });
+
+        // 3. reading the result still shows the failure against the original instruction
+        const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+        const failed = out.steps!.find((s) => s.stepId === '2;2')!;
+        expect(failed.outcome).toBe('Failed');
+        expect(failed.action).toBe('Sign in');
+        expect(witApi.getRevision).toHaveBeenCalledWith(49, 4, undefined, 'Engineering');
+      });
+    });
+
     it('marks a step inside a shared set using the parent+child path and records the set revision on the reference', async () => {
       testApi.getTestResultById.mockResolvedValue(resultWithIteration());
       await service.setTestStepResults({
