@@ -7,6 +7,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-15
+
 ### Added
 
 - **Test execution tools** - trigger and manage test runs for one or many test cases:
@@ -238,7 +240,8 @@ project uses — rather than requiring a separate, hand-rolled REST call.
 - The base64 decoded-size estimate now accounts for `=` padding, so a payload sitting exactly at
   the 1 KB boundary isn't incorrectly rejected.
 
-[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.6.1...v1.7.1
 [1.6.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.5.2...v1.6.1
 [1.5.2]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.4.1...v1.5.1
