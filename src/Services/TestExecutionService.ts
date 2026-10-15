@@ -66,6 +66,11 @@ import {
 
 // The test attachment API takes the file as a base64 string inside a JSON body.
 const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+// Largest attachment returned inline as base64; anything bigger has to be saved to a file.
+const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
+const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
+
 // What history enrichment learns about one run: its name, and the bugs of the results asked about.
 type RunEnrichment = {
   name?: string;
@@ -80,33 +85,36 @@ type SharedStepPin = { id: number; revision: number };
 
 // Runs looked up at the same time when enriching a history response.
 const RUN_LOOKUP_CONCURRENCY = 5;
+
 // Pages of test points read for one suite before giving up (Azure DevOps pages them).
 const MAX_POINT_PAGES = 50;
-// Test results are paged with skip/top: results per request, and requests before giving up.
+
+// Test results are paged with skip/top: results per request when no details are asked for ...
 const RESULT_PAGE_SIZE = 500;
-// Azure DevOps allows at most 200 results per request when details (work items, iterations...) are asked for.
+// ... and when they are: Azure DevOps allows at most 200 per request with details (work items, iterations...).
 const RESULT_PAGE_SIZE_WITH_DETAILS = 200;
+// Requests made at most when reading a run's results page by page, before giving up.
 const MAX_RESULT_PAGES = 200;
 // Results updated per request when linking a whole run to work items.
 const RESULT_UPDATE_BATCH_SIZE = 50;
-// Teams, and members of a team, read per request when looking a person up (paged with top/skip).
+
 // Results asked of the history query for one test case before giving up on filling every point.
 const MAX_HISTORY_RESULTS = 1000;
+
 // Attempts at updating a work item that someone else keeps changing underneath the update.
 const MAX_WORK_ITEM_UPDATE_ATTEMPTS = 3;
+
+// Teams, and members of a team, read per request when looking a person up (paged with top/skip).
 const IDENTITY_PAGE_SIZE = 100;
 // Pages read at most, for teams and for each team's members, before concluding nobody matches.
 const MAX_IDENTITY_PAGES = 100;
+
 // How long the project's bug work item types are reused.
 const BUG_TYPES_TTL_MS = 5 * 60 * 1000;
 // The category that holds a project's bug types (Bug, or whatever its process calls it).
 const BUG_CATEGORY = "Microsoft.BugCategory";
 // How long the project's resolution states are reused while updating many results.
 const RESOLUTION_STATES_TTL_MS = 60 * 1000;
-// Largest attachment returned inline as base64; anything bigger has to be saved to a file.
-const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
-const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
-const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
 
 /**
  * The api-version for the resolution-state route. It is a preview-only route, so a plain version
@@ -393,11 +401,6 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   /**
-   * Resolve the test points (test case + configuration pairs) in a plan for the given test
-   * cases. When suiteId is omitted each test case's suites are looked up and filtered to the
-   * plan. A test case with several configurations yields one point per configuration.
-   */
-  /**
    * Read every page of a suite's test points, optionally only those of the given test cases.
    * Azure DevOps returns points in pages with a continuation token; stops after MAX_POINT_PAGES
    * pages and says so rather than looping forever.
@@ -439,6 +442,11 @@ export class TestExecutionService extends AzureDevOpsService {
     return bySuite;
   }
 
+  /**
+   * Resolve the test points (test case + configuration pairs) in a plan for the given test
+   * cases. When suiteId is omitted each test case's suites are looked up and filtered to the
+   * plan. A test case with several configurations yields one point per configuration.
+   */
   protected async resolveTestPoints(
     planId: number,
     testCaseIds: number[],
