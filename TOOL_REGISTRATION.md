@@ -275,6 +275,10 @@ Notes:
   `iterationId` it shows the first failing row, else the first. Bug reports follow the same rule and
   say which row they describe. Changing step outcomes or attaching to a step refuses to guess: with
   several iterations it needs `iterationId`, and the other iterations are sent back unchanged.
+- Azure DevOps clears a result's failure type and resolution on any update that does not carry them, so
+  every update re-sends them. A resolution that the result reports by name only has to be looked up as
+  an id; if that lookup is not possible (the route is unavailable) the update still goes ahead and the
+  response carries `warnings` saying the resolution may have been cleared and how to set it again.
 - Edits to one result (comment, outcome, step marks, analysis, work item links) are queued per result
   inside the server, so calls made at the same moment do not overwrite each other. This covers calls
   to this server only; an edit made in the web UI or by another server at the same time can still

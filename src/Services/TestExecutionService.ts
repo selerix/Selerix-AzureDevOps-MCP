@@ -1105,6 +1105,7 @@ export class TestExecutionService extends AzureDevOpsService {
           ? "Passed"
           : iteration?.outcome ?? "None";
 
+      const warnings: string[] = [];
       const updated = await testApi.updateTestResults(
         [
           await this.buildResultUpdate(result, {
@@ -1116,7 +1117,7 @@ export class TestExecutionService extends AzureDevOpsService {
               // the row - timestamps, attachments...), and only what this call changes is replaced
               { ...iteration, id: iterationId, outcome: iterationOutcome, actionResults: all },
             ],
-          }),
+          }, warnings),
         ],
         this.config.project,
         params.runId
@@ -1127,6 +1128,7 @@ export class TestExecutionService extends AzureDevOpsService {
         stepsUpdated: updates.size,
         iterationOutcome,
         result: updated?.[0] && { outcome: updated[0].outcome, state: updated[0].state },
+        warnings: warnings.length ? warnings : undefined,
       };
     } catch (error) {
       console.error(`Error setting step results for ${params.runId}/${params.resultId}:`, error);
@@ -1144,6 +1146,7 @@ export class TestExecutionService extends AzureDevOpsService {
       const now = new Date();
       const paused = params.outcome === "Paused";
       const existing = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
+      const warnings: string[] = [];
       const updated = await testApi.updateTestResults(
         [
           await this.buildResultUpdate(existing, {
@@ -1152,7 +1155,7 @@ export class TestExecutionService extends AzureDevOpsService {
             state: paused ? "Paused" : "Completed",
             comment: params.comment,
             completedDate: paused ? undefined : now,
-          }),
+          }, warnings),
         ],
         this.config.project,
         params.runId
@@ -1162,6 +1165,7 @@ export class TestExecutionService extends AzureDevOpsService {
         resultId: params.resultId,
         outcome: updated?.[0]?.outcome,
         state: updated?.[0]?.state,
+        warnings: warnings.length ? warnings : undefined,
       };
     } catch (error) {
       console.error(`Error setting outcome for ${params.runId}/${params.resultId}:`, error);
@@ -1356,12 +1360,13 @@ export class TestExecutionService extends AzureDevOpsService {
       const testApi = await this.getTestApi();
       const existing = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
       const comment = !params.replace && existing.comment ? `${existing.comment}\n${params.comment}` : params.comment;
+      const warnings: string[] = [];
       const updated = await testApi.updateTestResults(
-        [await this.buildResultUpdate(existing, { id: params.resultId, comment })],
+        [await this.buildResultUpdate(existing, { id: params.resultId, comment }, warnings)],
         this.config.project,
         params.runId
       );
-      return { runId: params.runId, resultId: params.resultId, comment: updated?.[0]?.comment ?? comment };
+      return { runId: params.runId, resultId: params.resultId, comment: updated?.[0]?.comment ?? comment, warnings: warnings.length ? warnings : undefined };
     } catch (error) {
       console.error(`Error commenting on result ${params.runId}/${params.resultId}:`, error);
       throw error;
@@ -1423,7 +1428,7 @@ export class TestExecutionService extends AzureDevOpsService {
    * only adds a comment or marks a step - so every update re-sends what the result already has.
    * Fields in `patch` that are undefined are ignored; the rest override.
    */
-  protected async buildResultUpdate(existing: TestCaseResult, patch: TestCaseResult): Promise<TestCaseResult> {
+  protected async buildResultUpdate(existing: TestCaseResult, patch: TestCaseResult, warnings?: string[]): Promise<TestCaseResult> {
     const update: TestCaseResult = {};
     if (existing.failureType && existing.failureType !== "None") {
       update.failureType = existing.failureType;
@@ -1433,8 +1438,25 @@ export class TestExecutionService extends AzureDevOpsService {
     if (patch.resolutionStateId === undefined) {
       let resolutionStateId = existing.resolutionStateId;
       if (!resolutionStateId && existing.resolutionState) {
-        const states = await this.getResolutionStatesCached();
-        resolutionStateId = states.find((st) => st.name.toLowerCase() === existing.resolutionState!.toLowerCase())?.id;
+        // The result reports its resolution by name only, so the id to send back is looked up. If
+        // that cannot be done (the route is unavailable, as on some servers and behind some proxies)
+        // the update still goes ahead - it does not change the resolution, and must not be blocked by
+        // it - but Azure DevOps resets a resolution an update does not carry, so the caller is told.
+        try {
+          const states = await this.getResolutionStatesCached();
+          resolutionStateId = states.find((st) => st.name.toLowerCase() === existing.resolutionState!.toLowerCase())?.id;
+          if (!resolutionStateId) {
+            warnings?.push(
+              `The result's resolution '${existing.resolutionState}' is not one of the project's resolution states, so it could not be kept and may have been cleared.`
+            );
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          warnings?.push(
+            `The result's resolution '${existing.resolutionState}' could not be kept because the project's resolution states could not be read (${reason}), so it may have been cleared. ` +
+              `Set it again with updateTestResultAnalysis and resolutionStateId.`
+          );
+        }
       }
       if (resolutionStateId) {
         update.resolutionStateId = resolutionStateId;
@@ -1467,8 +1489,9 @@ export class TestExecutionService extends AzureDevOpsService {
       const resolutionStateId = await this.resolveResolutionStateId(params.resolutionState, params.resolutionStateId);
       const owner = params.analysisOwner ? await this.resolveTester(params.analysisOwner) : undefined;
       const current = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
+      const warnings: string[] = [];
       await testApi.updateTestResults(
-        [await this.buildResultUpdate(current, { id: params.resultId, failureType: params.failureType, resolutionStateId, owner: owner as TestCaseResult["owner"], comment: params.comment })],
+        [await this.buildResultUpdate(current, { id: params.resultId, failureType: params.failureType, resolutionStateId, owner: owner as TestCaseResult["owner"], comment: params.comment }, warnings)],
         this.config.project,
         params.runId
       );
@@ -1481,6 +1504,7 @@ export class TestExecutionService extends AzureDevOpsService {
         resolutionState: r.resolutionState,
         analysisOwner: r.owner ? { id: r.owner.id, displayName: r.owner.displayName, uniqueName: r.owner.uniqueName } : undefined,
         comment: r.comment,
+        warnings: warnings.length ? warnings : undefined,
       };
     } catch (error) {
       console.error(`Error updating analysis for ${params.runId}/${params.resultId}:`, error);
@@ -1947,6 +1971,7 @@ export class TestExecutionService extends AzureDevOpsService {
       // associatedBugs replaces the list, so each result's current bugs are read and merged. That
       // read-merge-write is done under the results' locks, a bounded batch at a time, so neither a
       // large run in one huge request nor a concurrent edit can lose an update.
+      const warnings = new Set<string>();
       for (let i = 0; i < resultIds.length; i += RESULT_UPDATE_BATCH_SIZE) {
         const batch = resultIds.slice(i, i + RESULT_UPDATE_BATCH_SIZE);
         await this.withResultLocks(params.runId, batch, async () => {
@@ -1957,9 +1982,11 @@ export class TestExecutionService extends AzureDevOpsService {
           for (let j = 0; j < batch.length; j++) {
             const ids = new Set((existingResults[j].associatedBugs || []).map((b) => String(b.id)));
             params.workItemIds.forEach((id) => ids.add(String(id)));
+            const found: string[] = [];
             updates.push(
-              await this.buildResultUpdate(existingResults[j], { id: batch[j], associatedBugs: [...ids].map((id) => ({ id })) })
+              await this.buildResultUpdate(existingResults[j], { id: batch[j], associatedBugs: [...ids].map((id) => ({ id })) }, found)
             );
+            found.forEach((w) => warnings.add(w));
           }
           await testApi.updateTestResults(updates, this.config.project, params.runId);
         });
@@ -1973,7 +2000,13 @@ export class TestExecutionService extends AzureDevOpsService {
           }
         }
       }
-      return { runId: params.runId, resultsLinked: resultIds, workItemIds: params.workItemIds, hyperlinked };
+      return {
+        runId: params.runId,
+        resultsLinked: resultIds,
+        workItemIds: params.workItemIds,
+        hyperlinked,
+        warnings: warnings.size ? [...warnings] : undefined,
+      };
     } catch (error) {
       console.error(`Error linking test run ${params.runId} to work items:`, error);
       throw error;

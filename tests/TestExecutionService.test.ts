@@ -1735,10 +1735,77 @@ describe('TestExecutionService', () => {
         expect(testApi.updateTestResults.mock.calls[0][0][0].resolutionStateId).toBe(11);
       });
 
-      it('still needs the lookup to keep a current resolution that is reported by name only', async () => {
-        restGet.mockResolvedValue({ statusCode: 404, result: null });
-        testApi.getTestResultById.mockResolvedValue({ id: 100000, resolutionState: 'Test issue' });
-        await expect(service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'x' })).rejects.toThrow('pass resolutionStateId');
+      describe('when the resolution-state route is unavailable', () => {
+        // the result reports its resolution by name only, so keeping it needs the lookup
+        const analysed = () => ({
+          id: 100000, testCase: { id: '5' }, comment: 'c', resolutionState: 'Test issue', failureType: 'Regression',
+          iterationDetails: [{ id: 1, actionResults: [] }]
+        });
+        const sent = () => testApi.updateTestResults.mock.calls[0][0][0];
+        const operations: [string, () => Promise<{ warnings?: string[] }>][] = [
+          ['addTestResultComment', () => service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'x' })],
+          ['setTestResultOutcome', () => service.setTestResultOutcome({ runId: 77, resultId: 100000, outcome: 'Passed' })],
+          ['setTestStepResults', () => service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 2, outcome: 'Passed' }] })],
+          ['updateTestResultAnalysis', () => service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Known Issue' })],
+          ['linkTestRunToWorkItems', () => service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12], addRunHyperlink: false })]
+        ];
+        beforeEach(() => {
+          restGet.mockResolvedValue({ statusCode: 404, result: null });
+          testApi.getTestResultById.mockResolvedValue(analysed());
+        });
+
+        it.each(operations)('%s still goes ahead, and says the resolution may have been cleared', async (_name, run) => {
+          const out = await run();
+          expect(testApi.updateTestResults).toHaveBeenCalledTimes(1);
+          expect(sent().resolutionStateId).toBeUndefined(); // it cannot be re-sent
+          expect(out.warnings).toHaveLength(1);
+          expect(out.warnings![0]).toContain("The result's resolution 'Test issue' could not be kept");
+          expect(out.warnings![0]).toContain('may have been cleared');
+          expect(out.warnings![0]).toContain('resolutionStateId');
+        });
+
+        it('keeps what it can: the failure type and the owner are still sent back', async () => {
+          testApi.getTestResultById.mockResolvedValue({ ...analysed(), owner: { id: 'guid-o' } });
+          await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'x' });
+          expect(sent()).toEqual(expect.objectContaining({ failureType: 'Regression', owner: { id: 'guid-o' } }));
+        });
+
+        it('does not warn when the caller supplies the resolution id, and does not look anything up', async () => {
+          const out = await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionStateId: 10 });
+          expect(restGet).not.toHaveBeenCalled();
+          expect(out.warnings).toBeUndefined();
+          expect(sent().resolutionStateId).toBe(10);
+        });
+
+        it('does not warn about a result that has no resolution', async () => {
+          testApi.getTestResultById.mockResolvedValue({ id: 100000, comment: 'c' });
+          const out = await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'x' });
+          expect(out.warnings).toBeUndefined();
+          expect(restGet).not.toHaveBeenCalled();
+        });
+
+        it('reports each warning once when many results of a run are linked', async () => {
+          testApi.getTestResults.mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]);
+          const out = await service.linkTestRunToWorkItems({ runId: 77, workItemIds: [12], addRunHyperlink: false });
+          expect(out.warnings).toHaveLength(1);
+          expect(testApi.updateTestResults.mock.calls[0][0]).toHaveLength(3);
+        });
+      });
+
+      describe('when the resolution states can be read', () => {
+        it('re-sends the id and does not warn', async () => {
+          testApi.getTestResultById.mockResolvedValue({ id: 100000, comment: 'c', resolutionState: 'Product issue' });
+          const out = await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'x' });
+          expect(testApi.updateTestResults.mock.calls[0][0][0].resolutionStateId).toBe(11);
+          expect(out.warnings).toBeUndefined();
+        });
+
+        it('warns when the result\'s resolution is not one of the project\'s states', async () => {
+          testApi.getTestResultById.mockResolvedValue({ id: 100000, comment: 'c', resolutionState: 'Some retired state' });
+          const out = await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'x' });
+          expect(testApi.updateTestResults.mock.calls[0][0][0].resolutionStateId).toBeUndefined();
+          expect(out.warnings![0]).toContain("'Some retired state' is not one of the project's resolution states");
+        });
       });
 
       it('names the available states when the name is unknown', async () => {
