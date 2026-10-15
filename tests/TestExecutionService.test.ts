@@ -871,6 +871,39 @@ describe('TestExecutionService', () => {
       expect(changed.actionResults.find((a: any) => a.actionPath === '00000003')).toEqual(expect.objectContaining({ outcome: 'Passed', iterationId: 2 }));
     });
 
+    it('keeps the edited row\'s own data - parameters, timestamps, attachments - and changes only its steps and outcome', async () => {
+      const rows = threeRows();
+      Object.assign(rows.iterationDetails[1], {
+        startedDate: '2026-10-15T10:00:00Z', completedDate: '2026-10-15T10:05:00Z', durationInMs: 300000,
+        comment: 'row 2 note', errorMessage: 'row 2 error', attachments: [{ id: 41, name: 'row2.png' }],
+        url: 'https://dev.azure.com/selerix/Engineering/_apis/test/Runs/77/Results/100000/Iterations/2'
+      });
+      testApi.getTestResultById.mockResolvedValue(rows);
+
+      await service.setTestStepResults({ runId: 77, resultId: 100000, iterationId: 2, steps: [{ stepId: 3, outcome: 'Passed' }] });
+
+      const edited = (testApi.updateTestResults.mock.calls[0][0][0].iterationDetails as any[]).find((i) => i.id === 2);
+      // what it already had is still there ...
+      expect(edited.parameters).toEqual([{ parameterName: 'user', value: 'bob' }]);
+      expect(edited).toEqual(expect.objectContaining({
+        startedDate: '2026-10-15T10:00:00Z', completedDate: '2026-10-15T10:05:00Z', durationInMs: 300000,
+        comment: 'row 2 note', errorMessage: 'row 2 error', attachments: [{ id: 41, name: 'row2.png' }],
+        url: 'https://dev.azure.com/selerix/Engineering/_apis/test/Runs/77/Results/100000/Iterations/2'
+      }));
+      // ... and only the outcome and the steps changed
+      expect(edited.outcome).toBe('Passed');
+      expect(edited.actionResults.find((a: any) => a.actionPath === '00000003').outcome).toBe('Passed');
+    });
+
+    it('still builds the row from nothing when the result has no iterations yet', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000, testCase: { id: '5' }, comment: 'c' });
+      await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 2, outcome: 'Passed' }] });
+      const sent = testApi.updateTestResults.mock.calls[0][0][0].iterationDetails as any[];
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toEqual(expect.objectContaining({ id: 1 }));
+      expect(sent[0].actionResults).toHaveLength(1);
+    });
+
     it('refuses to attach to a step without being told which row, and attaches to the chosen row', async () => {
       await expect(
         service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt', stepId: 3 })

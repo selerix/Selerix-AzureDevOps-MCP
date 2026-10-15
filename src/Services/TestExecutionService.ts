@@ -1068,7 +1068,9 @@ export class TestExecutionService extends AzureDevOpsService {
             // the other iterations are sent back as they are, so that writing one cannot drop the rest
             iterationDetails: [
               ...(result.iterationDetails || []).filter((i) => i.id !== iterationId),
-              { id: iterationId, outcome: iterationOutcome, actionResults: all },
+              // the chosen iteration keeps everything it already has (its parameters - the data of
+              // the row - timestamps, attachments...), and only what this call changes is replaced
+              { ...iteration, id: iterationId, outcome: iterationOutcome, actionResults: all },
             ],
           }),
         ],
