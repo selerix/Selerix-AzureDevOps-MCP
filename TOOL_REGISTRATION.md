@@ -251,7 +251,7 @@ Run test cases, record results, and file bugs (`src/Services/TestExecutionServic
   `deleteTestRunAttachment`, `updateTestResultAnalysis` (analysis owner, failure type, resolution, comment),
   `listTestResolutionStates`
 - Plan points: `assignTester`, `resetTestToActive`
-- History and links: `getTestRuns`, `getTestCaseExecutionHistory`, `getTestPoints`, `linkTestRunToWorkItems`
+- History and links: `getTestRuns`, `getTestCaseExecutionHistory`, `getTestPoints`, `linkTestRunToWorkItems`, `unlinkTestRunFromWorkItems`
 - Bugs: `createBugFromTestRun`, `updateBugWithTestRun`
 
 Notes:
@@ -285,6 +285,10 @@ Notes:
   every update re-sends them. A resolution that the result reports by name only has to be looked up as
   an id; if that lookup is not possible (the route is unavailable) the update still goes ahead and the
   response carries `warnings` saying the resolution may have been cleared and how to set it again.
+- `unlinkTestRunFromWorkItems` undoes a link: it removes the work items from the results' associated bugs and
+  removes their `TcmResult` links to those results (and the run hyperlink once none is left) from the work items.
+  It leaves the work items and their Tested By link to the test case alone, and writes nothing where there is
+  nothing to remove.
 - `linkTestRunToWorkItems` records only bugs (the types in the project's bug category) as a result's associated
   bugs; any other work item type gets just the hyperlink to the run, and is reported under
   `notAssociatedAsBugs`.

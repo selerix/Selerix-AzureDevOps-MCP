@@ -29,6 +29,7 @@ import {
   GetTestPointsParams,
   GetTestRunsParams,
   LinkTestRunToWorkItemsParams,
+  UnlinkTestRunFromWorkItemsParams,
 } from "../Interfaces/TestExecution";
 import {
   PointUpdateModel,
@@ -2107,6 +2108,117 @@ export class TestExecutionService extends AzureDevOpsService {
       console.error(`Error linking test run ${params.runId} to work items:`, error);
       throw error;
     }
+  }
+
+  /**
+   * The undo of linkTestRunToWorkItems (and of the links createBugFromTestRun makes): the work
+   * items are taken out of the results' associated bugs, and their link to those results is
+   * removed. Only the links to this run's results are touched; the link to the test case
+   * (Tested By) and everything else on the work item stay.
+   */
+  public async unlinkTestRunFromWorkItems(params: UnlinkTestRunFromWorkItemsParams) {
+    try {
+      if (!params.workItemIds || params.workItemIds.length === 0) {
+        throw new Error("workItemIds must contain at least one work item id");
+      }
+      const testApi = await this.getTestApi();
+      const run = await testApi.getTestRunById(this.config.project, params.runId);
+      const workItemIds = [...new Set(params.workItemIds)];
+      const remove = new Set(workItemIds.map(String));
+
+      const resultIds: number[] =
+        params.resultId !== undefined ? [params.resultId] : (await this.getAllRunResults(params.runId)).map((r) => r.id!);
+
+      // Same read-modify-write under the results' locks as linking. A result that lists none of the
+      // work items is left alone, so nothing is written for it.
+      const warnings = new Set<string>();
+      const unlinkedResults: number[] = [];
+      for (let i = 0; i < resultIds.length; i += RESULT_UPDATE_BATCH_SIZE) {
+        const batch = resultIds.slice(i, i + RESULT_UPDATE_BATCH_SIZE);
+        await this.withResultLocks(params.runId, batch, async () => {
+          const existingResults = await mapWithConcurrency(batch, RUN_LOOKUP_CONCURRENCY, (id) =>
+            testApi.getTestResultById(this.config.project, params.runId, id, ResultDetails.WorkItems)
+          );
+          const updates: TestCaseResult[] = [];
+          for (let j = 0; j < batch.length; j++) {
+            const current = (existingResults[j].associatedBugs || []).map((b) => String(b.id));
+            if (!current.some((id) => remove.has(id))) {
+              continue;
+            }
+            const found: string[] = [];
+            updates.push(
+              await this.buildResultUpdate(
+                existingResults[j],
+                { id: batch[j], associatedBugs: current.filter((id) => !remove.has(id)).map((id) => ({ id })) },
+                found
+              )
+            );
+            found.forEach((w) => warnings.add(w));
+            unlinkedResults.push(batch[j]);
+          }
+          if (updates.length > 0) {
+            await testApi.updateTestResults(updates, this.config.project, params.runId);
+          }
+        });
+      }
+
+      // The work items' side: the link to each of this run's results in scope, then the hyperlink to
+      // the run once none of its results is left linked.
+      const resultLink = new RegExp(`^vstfs:///TestManagement/TcmResult/${params.runId}\\.(\\d+)$`, "i");
+      const inScope = new Set(resultIds);
+      const relationsRemoved: Record<number, number> = {};
+      for (const workItemId of workItemIds) {
+        relationsRemoved[workItemId] = await this.removeRelations(workItemId, (relations) => {
+          const drop = new Set<number>();
+          relations.forEach((r, index) => {
+            const match = r.rel === "ArtifactLink" ? resultLink.exec(r.url ?? "") : null;
+            if (match && inScope.has(Number(match[1]))) {
+              drop.add(index);
+            }
+          });
+          if (params.removeRunHyperlink !== false && run.webAccessUrl) {
+            const stillLinked = relations.some((r, index) => !drop.has(index) && r.rel === "ArtifactLink" && resultLink.test(r.url ?? ""));
+            if (!stillLinked) {
+              relations.forEach((r, index) => {
+                if (r.rel === "Hyperlink" && sameRunLink(r.url, run.webAccessUrl!)) {
+                  drop.add(index);
+                }
+              });
+            }
+          }
+          return drop;
+        });
+      }
+
+      return {
+        runId: params.runId,
+        resultsUnlinked: unlinkedResults,
+        workItemIds,
+        relationsRemoved,
+        warnings: warnings.size ? [...warnings] : undefined,
+      };
+    } catch (error) {
+      console.error(`Error unlinking test run ${params.runId} from work items:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove the relations `pick` chooses (by index into the work item's relations) from a fresh read
+   * of it, guarded by the revision like any other update. Returns how many were removed.
+   */
+  private async removeRelations(
+    workItemId: number,
+    pick: (relations: { rel?: string; url?: string }[]) => Set<number>
+  ): Promise<number> {
+    let removed = 0;
+    await this.updateWorkItemIfUnchanged(workItemId, `Work item ${workItemId}`, (workItem) => {
+      const drop = pick(workItem.relations || []);
+      removed = drop.size;
+      // highest index first, so removing one does not shift the next
+      return [...drop].sort((a, b) => b - a).map((index) => ({ op: Operation.Remove, path: `/relations/${index}`, value: undefined }));
+    });
+    return removed;
   }
 
   /**

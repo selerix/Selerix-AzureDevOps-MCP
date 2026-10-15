@@ -23,6 +23,7 @@ import {
   GetTestRunsParams,
   GetTestCaseExecutionHistoryParams,
   LinkTestRunToWorkItemsParams,
+  UnlinkTestRunFromWorkItemsParams,
   CreateBugFromTestRunParams,
   UpdateBugWithTestRunParams
 } from "../Interfaces/TestExecution";
@@ -241,6 +242,16 @@ export class TestExecutionTools {
       return formatMcpResponse(result, "Test run linked to work items");
     } catch (error: unknown) {
       console.error('Error in linkTestRunToWorkItems:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  async unlinkTestRunFromWorkItems(params: UnlinkTestRunFromWorkItemsParams): Promise<McpResponse> {
+    try {
+      const result = await this.service.unlinkTestRunFromWorkItems(params);
+      return formatMcpResponse(result, "Test run unlinked from work items");
+    } catch (error: unknown) {
+      console.error('Error in unlinkTestRunFromWorkItems:', error);
       return formatErrorResponse(error);
     }
   }
