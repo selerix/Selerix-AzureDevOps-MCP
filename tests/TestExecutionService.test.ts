@@ -1076,6 +1076,52 @@ describe('TestExecutionService', () => {
         expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-9');
       });
 
+      const person = (n: number) => ({ identity: { id: `guid-x${n}`, uniqueName: `person${n}@selerix.com`, displayName: `Person ${n}` } });
+      const pat = { identity: { id: 'guid-9', uniqueName: 'pat.tester@selerix.com', displayName: 'Pat Tester' } };
+
+      it('finds a tester on a later page of teams', async () => {
+        coreApi.getTeams.mockImplementation(async (_p: string, _m: boolean, _top: number, skip: number) =>
+          skip === 0 ? Array.from({ length: 100 }, (_, i) => ({ id: `team-${i}` })) : [{ id: 'team-last' }]);
+        coreApi.getTeamMembersWithExtendedProperties.mockImplementation(async (_p: string, team: string) =>
+          team === 'team-last' ? [pat] : []);
+
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'pat.tester@selerix.com' } });
+
+        expect(coreApi.getTeams.mock.calls.map((c) => [c[2], c[3]])).toEqual([[100, 0], [100, 100]]);
+        expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-9');
+      });
+
+      it('finds a tester on a later page of a team\'s members', async () => {
+        coreApi.getTeams.mockResolvedValue([{ id: 't1' }]);
+        coreApi.getTeamMembersWithExtendedProperties.mockImplementation(async (_p: string, _t: string, _top: number, skip: number) =>
+          skip === 0 ? Array.from({ length: 100 }, (_, i) => person(i)) : [pat]);
+
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { displayName: 'Pat Tester' } });
+
+        expect(coreApi.getTeamMembersWithExtendedProperties.mock.calls.map((c) => [c[2], c[3]])).toEqual([[100, 0], [100, 100]]);
+        expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-9');
+      });
+
+      it('finds an analysis owner the same way', async () => {
+        coreApi.getTeams.mockResolvedValue([{ id: 't1' }]);
+        coreApi.getTeamMembersWithExtendedProperties.mockImplementation(async (_p: string, _t: string, _top: number, skip: number) =>
+          skip === 0 ? Array.from({ length: 100 }, (_, i) => person(i)) : [pat]);
+        testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+        await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, analysisOwner: { uniqueName: 'pat.tester@selerix.com' } });
+        expect(testApi.updateTestResults.mock.calls[0][0][0].owner.id).toBe('guid-9');
+      });
+
+      it('stops, and reports nobody found, when a server ignores skip and repeats the same page', async () => {
+        coreApi.getTeams.mockResolvedValue(Array.from({ length: 100 }, () => ({ id: 'same-team' })));
+        coreApi.getTeamMembersWithExtendedProperties.mockResolvedValue(Array.from({ length: 100 }, (_, i) => person(i)));
+        await expect(
+          service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'nobody@selerix.com' } })
+        ).rejects.toThrow("Could not find 'nobody@selerix.com'");
+        // the first page has a new team so a second is requested; it repeats, which ends the search
+        expect(coreApi.getTeams).toHaveBeenCalledTimes(2);
+        expect(coreApi.getTeamMembersWithExtendedProperties).toHaveBeenCalledTimes(2);
+      });
+
       it('does not search when a GUID is given', async () => {
         await service.assignTester({ planId: 1, testCaseIds: [5], tester: { id: 'guid-1' } });
         expect(coreApi.getTeams).not.toHaveBeenCalled();

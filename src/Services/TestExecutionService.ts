@@ -76,6 +76,10 @@ const RESULT_PAGE_SIZE_WITH_DETAILS = 200;
 const MAX_RESULT_PAGES = 200;
 // Results updated per request when linking a whole run to work items.
 const RESULT_UPDATE_BATCH_SIZE = 50;
+// Teams, and members of a team, read per request when looking a person up (paged with top/skip).
+const IDENTITY_PAGE_SIZE = 100;
+// Pages read at most, for teams and for each team's members, before concluding nobody matches.
+const MAX_IDENTITY_PAGES = 100;
 // How long the project's resolution states are reused while updating many results.
 const RESOLUTION_STATES_TTL_MS = 60 * 1000;
 // Largest attachment returned inline as base64; anything bigger has to be saved to a file.
@@ -1274,14 +1278,44 @@ export class TestExecutionService extends AzureDevOpsService {
     }
     const needle = (tester.uniqueName ?? tester.displayName)!.trim().toLowerCase();
     const coreApi = await this.connection.getCoreApi();
-    const teams = await coreApi.getTeams(this.config.project, false, 100);
-    for (const team of teams || []) {
-      const members = await coreApi.getTeamMembersWithExtendedProperties(this.config.project, team.id!);
-      const match = (members || []).find(
-        (m) => m.identity?.uniqueName?.toLowerCase() === needle || m.identity?.displayName?.toLowerCase() === needle
-      );
-      if (match?.identity?.id) {
-        return { id: match.identity.id, uniqueName: match.identity.uniqueName, displayName: match.identity.displayName };
+    // Teams and each team's members are both paged (top/skip), so every page is read before
+    // concluding the person is absent. A page that adds nothing new ends the loop, in case a
+    // server ignores skip and keeps returning the same page.
+    const seenTeams = new Set<string>();
+    for (let teamPage = 0; teamPage < MAX_IDENTITY_PAGES; teamPage++) {
+      const teams = (await coreApi.getTeams(this.config.project, false, IDENTITY_PAGE_SIZE, teamPage * IDENTITY_PAGE_SIZE)) || [];
+      const newTeams = teams.filter((t) => {
+        if (!t.id || seenTeams.has(t.id)) return false;
+        seenTeams.add(t.id);
+        return true;
+      });
+
+      for (const team of newTeams) {
+        const seenMembers = new Set<string>();
+        for (let memberPage = 0; memberPage < MAX_IDENTITY_PAGES; memberPage++) {
+          const members =
+            (await coreApi.getTeamMembersWithExtendedProperties(
+              this.config.project, team.id!, IDENTITY_PAGE_SIZE, memberPage * IDENTITY_PAGE_SIZE
+            )) || [];
+          const match = members.find(
+            (m) => m.identity?.uniqueName?.toLowerCase() === needle || m.identity?.displayName?.toLowerCase() === needle
+          );
+          if (match?.identity?.id) {
+            return { id: match.identity.id, uniqueName: match.identity.uniqueName, displayName: match.identity.displayName };
+          }
+          const newMembers = members.filter((m) => {
+            const id = m.identity?.id;
+            if (!id || seenMembers.has(id)) return false;
+            seenMembers.add(id);
+            return true;
+          });
+          if (members.length < IDENTITY_PAGE_SIZE || newMembers.length === 0) {
+            break;
+          }
+        }
+      }
+      if (teams.length < IDENTITY_PAGE_SIZE || newTeams.length === 0) {
+        break;
       }
     }
     throw new Error(
