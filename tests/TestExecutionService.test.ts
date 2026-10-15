@@ -1643,10 +1643,37 @@ describe('TestExecutionService', () => {
       expect(testApi.createTestRunAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileName: 'notes.txt', stream: 'aGk=' }), 'Engineering', 77);
     });
 
+    it('refuses something that is not a regular file, before reading it', async () => {
+      await expect(service.addTestRunAttachment({ runId: 77, filePath: tmpDir })).rejects.toThrow('is not a regular file');
+      expect(testApi.createTestRunAttachment).not.toHaveBeenCalled();
+    });
+
     it('fails for a missing file', async () => {
       await expect(
         service.addTestRunAttachment({ runId: 77, filePath: path.join(tmpDir, 'nope.png') })
       ).rejects.toThrow('File not found');
+    });
+  });
+
+  describe('link warnings reach the bug tools', () => {
+    const WARNING = 'the existing resolution could not be kept';
+    beforeEach(() => {
+      testApi.getTestResultById.mockResolvedValue(
+        resultWithIteration([{ actionPath: '00000003', outcome: 'Failed', errorMessage: 'Save button <missing>' }])
+      );
+      jest.spyOn(service, 'linkTestRunToWorkItems').mockResolvedValue({ runId: 77, warnings: [WARNING] } as any);
+    });
+
+    it('createBugFromTestRun returns them', async () => {
+      const out = await service.createBugFromTestRun({ runId: 77, resultId: 100000 });
+      expect(out.warnings).toEqual([WARNING]);
+    });
+
+    it('updateBugWithTestRun returns them', async () => {
+      witApi.getWorkItem.mockImplementation(async (id: number) =>
+        id === 700 ? { id: 700, rev: 1, fields: {}, relations: [] } : { id: 5, url: 'https://wi/5', fields: { 'System.Title': 't' } });
+      const out = await service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 });
+      expect(out.warnings).toEqual([WARNING]);
     });
   });
 

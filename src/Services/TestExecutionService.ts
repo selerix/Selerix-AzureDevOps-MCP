@@ -1215,7 +1215,12 @@ export class TestExecutionService extends AzureDevOpsService {
       if (!fs.existsSync(realPath)) {
         throw new Error(`File not found: ${params.filePath}`);
       }
-      const size = fs.statSync(realPath).size;
+      const stat = fs.statSync(realPath);
+      // a named pipe or device reports size 0 and would block the synchronous read
+      if (!stat.isFile()) {
+        throw new Error(`${params.filePath} is not a regular file.`);
+      }
+      const size = stat.size;
       if (size > MAX_TEST_ATTACHMENT_BYTES) {
         throw new Error(`File is ${Math.round(size / 1048576)} MB; the limit is ${MAX_TEST_ATTACHMENT_BYTES / 1048576} MB`);
       }
@@ -2255,8 +2260,9 @@ export class TestExecutionService extends AzureDevOpsService {
       const bug = await witApi.createWorkItem(undefined, patch, this.config.project, "Bug");
 
       const url = bug._links?.html?.href ?? bug.url;
+      let linkWarnings: string[] | undefined;
       try {
-        await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [bug.id!], addRunHyperlink: false });
+        linkWarnings = (await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [bug.id!], addRunHyperlink: false })).warnings;
       } catch (error) {
         // The bug exists now. Reporting only the linking error would hide its id, and creating the
         // bug again to retry would leave a duplicate.
@@ -2266,7 +2272,7 @@ export class TestExecutionService extends AzureDevOpsService {
             `Do not create the bug again; retry linkTestRunToWorkItems with runId ${params.runId}, resultId ${params.resultId} and workItemIds [${bug.id}].`
         );
       }
-      return { bugId: bug.id, title: fields["System.Title"], url, runId: params.runId, resultId: params.resultId };
+      return { bugId: bug.id, title: fields["System.Title"], url, runId: params.runId, resultId: params.resultId, warnings: linkWarnings };
     } catch (error) {
       console.error(`Error creating bug from test result ${params.runId}/${params.resultId}:`, error);
       throw error;
@@ -2299,8 +2305,9 @@ export class TestExecutionService extends AzureDevOpsService {
         return patch;
       });
 
+      let linkWarnings: string[] | undefined;
       try {
-        await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false });
+        linkWarnings = (await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false })).warnings;
       } catch (error) {
         // The bug has already been updated. Calling this tool again would add the comment twice.
         const reason = error instanceof Error ? error.message : String(error);
@@ -2310,7 +2317,7 @@ export class TestExecutionService extends AzureDevOpsService {
             `resultId ${params.resultId} and workItemIds [${params.bugId}].`
         );
       }
-      return { bugId: params.bugId, runId: params.runId, resultId: params.resultId, appendedToReproSteps: !!params.appendToReproSteps };
+      return { bugId: params.bugId, runId: params.runId, resultId: params.resultId, appendedToReproSteps: !!params.appendToReproSteps, warnings: linkWarnings };
     } catch (error) {
       console.error(`Error updating bug ${params.bugId} with test result ${params.runId}/${params.resultId}:`, error);
       throw error;
