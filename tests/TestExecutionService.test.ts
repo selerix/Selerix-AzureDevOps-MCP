@@ -204,6 +204,61 @@ describe('TestExecutionService', () => {
       expect(testApi.createTestRun).not.toHaveBeenCalled();
     });
 
+    describe('choosing the release artifact', () => {
+      const automated = {
+        testCaseIds: [5], planId: 1, testType: 'automated' as const, runner: 'releaseStage' as const,
+        buildPipelineId: 8, buildId: 42, releasePipelineId: 3, stageName: 'Stage'
+      };
+      const buildArtifact = (alias: string, pipelineId: string, name = `pipeline ${pipelineId}`) =>
+        ({ alias, type: 'Build', definitionReference: { definition: { id: pipelineId, name } } });
+      const withArtifacts = (artifacts: unknown[]) =>
+        releaseApi.getReleaseDefinition.mockResolvedValue({ id: 3, environments: [{ id: 12, name: 'Stage' }], artifacts });
+
+      it('does not fall back to a Build artifact of a different pipeline', async () => {
+        withArtifacts([buildArtifact('_other', '99', 'Other build')]);
+        await expect(service.startTestRun(automated)).rejects.toThrow(
+          'has no Build artifact from build pipeline 8. Artifacts: _other (Build, Other build)'
+        );
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+        expect(releaseApi.createRelease).not.toHaveBeenCalled();
+      });
+
+      it('rejects an explicit alias that belongs to a different pipeline', async () => {
+        withArtifacts([buildArtifact('_build', '8'), buildArtifact('_other', '99')]);
+        await expect(service.startTestRun({ ...automated, artifactAlias: '_other' })).rejects.toThrow(
+          "Artifact '_other' is not a Build artifact of build pipeline 8"
+        );
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+      });
+
+      it('rejects an explicit alias that is not a Build artifact', async () => {
+        withArtifacts([buildArtifact('_build', '8'), { alias: '_pkg', type: 'Package', definitionReference: {} }]);
+        await expect(service.startTestRun({ ...automated, artifactAlias: '_pkg' })).rejects.toThrow('is not a Build artifact');
+      });
+
+      it('rejects an alias the release pipeline does not have', async () => {
+        await expect(service.startTestRun({ ...automated, artifactAlias: '_nope' })).rejects.toThrow("has no artifact '_nope'");
+      });
+
+      it('asks for an alias when several Build artifacts come from the requested pipeline', async () => {
+        withArtifacts([buildArtifact('_a', '8'), buildArtifact('_b', '8')]);
+        await expect(service.startTestRun(automated)).rejects.toThrow('several Build artifacts from build pipeline 8 (_a, _b); pass artifactAlias');
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+      });
+
+      it('accepts an alias that picks one of several matching artifacts', async () => {
+        withArtifacts([buildArtifact('_a', '8'), buildArtifact('_b', '8')]);
+        await service.startTestRun({ ...automated, artifactAlias: '_b' });
+        expect(releaseApi.createRelease.mock.calls[0][0].artifacts[0].alias).toBe('_b');
+      });
+
+      it('picks the artifact of the requested pipeline among several', async () => {
+        withArtifacts([buildArtifact('_other', '99'), buildArtifact('_mine', '8')]);
+        await service.startTestRun(automated);
+        expect(releaseApi.createRelease.mock.calls[0][0].artifacts[0].alias).toBe('_mine');
+      });
+    });
+
     describe('failures while launching an automated run', () => {
       const automated = {
         testCaseIds: [5], planId: 1, testType: 'automated' as const, runner: 'releaseStage' as const,
@@ -224,7 +279,7 @@ describe('TestExecutionService', () => {
 
       it('creates no run when the release pipeline has no build artifact', async () => {
         releaseApi.getReleaseDefinition.mockResolvedValue({ id: 3, environments: [{ id: 12, name: 'Stage' }], artifacts: [] });
-        await expect(service.startTestRun(automated)).rejects.toThrow('No build artifact found');
+        await expect(service.startTestRun(automated)).rejects.toThrow('has no Build artifact from build pipeline 8. Artifacts: none');
         expect(testApi.createTestRun).not.toHaveBeenCalled();
       });
 

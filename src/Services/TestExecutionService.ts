@@ -470,13 +470,42 @@ export class TestExecutionService extends AzureDevOpsService {
       );
     }
 
+    // The release is created with the chosen build as the version of one artifact, so that artifact
+    // must be a Build artifact fed by the requested build pipeline. Anything else would bind the
+    // build to an incompatible source, so it is rejected (before any run exists) rather than guessed.
     const artifacts = definition.artifacts || [];
-    const artifact = params.artifactAlias
-      ? artifacts.find((a) => a.alias === params.artifactAlias)
-      : artifacts.find((a) => a.type === "Build" && Number(a.definitionReference?.definition?.id) === params.buildPipelineId) ||
-        artifacts.find((a) => a.type === "Build");
-    if (!artifact) {
-      throw new Error(`No build artifact found on release pipeline ${params.releasePipelineId}`);
+    const isBuildOfPipeline = (a: (typeof artifacts)[number]) =>
+      a.type === "Build" && Number(a.definitionReference?.definition?.id) === params.buildPipelineId;
+    const describe = (a: (typeof artifacts)[number]) =>
+      `${a.alias} (${a.type}${a.definitionReference?.definition?.name ? `, ${a.definitionReference.definition.name}` : ""})`;
+    const available = artifacts.map(describe).join(", ") || "none";
+
+    let artifact: (typeof artifacts)[number];
+    if (params.artifactAlias) {
+      const byAlias = artifacts.find((a) => a.alias === params.artifactAlias);
+      if (!byAlias) {
+        throw new Error(`Release pipeline ${params.releasePipelineId} has no artifact '${params.artifactAlias}'. Artifacts: ${available}`);
+      }
+      if (!isBuildOfPipeline(byAlias)) {
+        throw new Error(
+          `Artifact '${params.artifactAlias}' is not a Build artifact of build pipeline ${params.buildPipelineId}. Artifacts: ${available}`
+        );
+      }
+      artifact = byAlias;
+    } else {
+      const matching = artifacts.filter(isBuildOfPipeline);
+      if (matching.length === 0) {
+        throw new Error(
+          `Release pipeline ${params.releasePipelineId} has no Build artifact from build pipeline ${params.buildPipelineId}. Artifacts: ${available}`
+        );
+      }
+      if (matching.length > 1) {
+        throw new Error(
+          `Release pipeline ${params.releasePipelineId} has several Build artifacts from build pipeline ${params.buildPipelineId} ` +
+            `(${matching.map((a) => a.alias).join(", ")}); pass artifactAlias to choose one`
+        );
+      }
+      artifact = matching[0];
     }
 
     const build = await this.resolveBuild(params.buildPipelineId!, params.buildId, params.buildNumber);

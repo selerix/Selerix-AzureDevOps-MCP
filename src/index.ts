@@ -2338,7 +2338,7 @@ async function main() {
         buildNumber: z.string().optional().describe("Automated only: build number such as '20261015.1'; latest completed build is used when neither buildId nor buildNumber is given"),
         releasePipelineId: z.number().optional().describe("Automated only: release pipeline to run the tests in (see listReleaseDefinitions)"),
         stageName: z.string().optional().describe("Automated only: release pipeline stage to deploy and run (see getReleaseDefinitionDetails)"),
-        artifactAlias: z.string().optional().describe("Automated only: release artifact alias bound to the build; inferred from buildPipelineId when omitted"),
+        artifactAlias: z.string().optional().describe("Automated only: alias of the release artifact bound to the build; must be a Build artifact of buildPipelineId. Inferred from buildPipelineId when omitted and only one artifact matches"),
         runIdVariableName: z.string().optional().describe("Automated only: release variable that receives the test run id (default 'test.RunId')")
       },
       async (params, extra) => {

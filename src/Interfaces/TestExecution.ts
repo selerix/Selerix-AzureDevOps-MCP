@@ -69,7 +69,7 @@ export interface StartTestRunParams {
   releasePipelineId?: number;
   /** Name of the release pipeline stage (environment) to deploy and run the tests in */
   stageName?: string;
-  /** Alias of the release artifact the build is bound to; inferred from buildPipelineId when omitted */
+  /** Alias of the release artifact the build is bound to; must be a Build artifact of buildPipelineId, and is inferred from it when only one matches */
   artifactAlias?: string;
   /** Release variable that receives the test run id so the stage's test task can pick it up */
   runIdVariableName?: string;
