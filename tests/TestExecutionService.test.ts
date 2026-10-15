@@ -616,7 +616,7 @@ describe('TestExecutionService', () => {
       isActive: false,
       isAutomated: false,
       tester: { displayName: 'Pat Tester' },
-      results: { outcome: 'failed', state: 'completed', lastTestRunId: 77, lastResultId: 100000, lastRunBuildNumber: '42', failureType: 'regression' },
+      results: { outcome: 3, state: 3, lastResultState: 5, lastTestRunId: 77, lastResultId: 100000, lastRunBuildNumber: '42', failureType: 1 },
       lastResetToActive: '2026-10-15T15:00:00Z',
       lastUpdatedBy: { displayName: 'Ivan' },
       lastUpdatedDate: '2026-10-15T15:01:00Z',
@@ -631,7 +631,8 @@ describe('TestExecutionService', () => {
       expect(testPlanApi.getPointsList).toHaveBeenCalledWith('Engineering', 1, 20, undefined, '5', undefined, undefined, true, false);
       expect(out.points[0]).toEqual(expect.objectContaining({
         pointId: 9, suiteId: 20, testCaseId: 5, configuration: 'Windows 10', tester: 'Pat Tester',
-        outcome: 'failed', lastRunId: 77, lastResultId: 100000, lastRunBuild: '42', lastResetToActive: '2026-10-15T15:00:00Z'
+        outcome: 'Failed', state: 'NotReady', lastResultState: 'Completed', failureType: 'Regression',
+        lastRunId: 77, lastResultId: 100000, lastRunBuild: '42', lastResetToActive: '2026-10-15T15:00:00Z'
       }));
       expect(out.unresolvedTestCaseIds).toEqual([]);
     });
@@ -666,9 +667,11 @@ describe('TestExecutionService', () => {
       });
       const out = await service.getTestPoints({ planId: 1, testCaseIds: [5], includeHistory: true, historyTop: 2 });
 
-      expect(testApi.getTestResultsByQuery.mock.calls[0][0].resultsFilter).toEqual(
-        expect.objectContaining({ testPointIds: [9], testPlanId: 1 })
-      );
+      // by test case, not by point: a point-id query only returns each point's latest result
+      expect(testApi.getTestResultsByQuery).toHaveBeenCalledTimes(1);
+      const filter = testApi.getTestResultsByQuery.mock.calls[0][0].resultsFilter;
+      expect(filter).toEqual(expect.objectContaining({ testCaseId: 5, testPlanId: 1 }));
+      expect(filter.testPointIds).toBeUndefined();
       const history = out.points[0].history as { resultId: number; runName?: string }[];
       expect(history.map((h) => h.resultId)).toEqual([3, 2]);
       expect(history[0].runName).toBe('run');

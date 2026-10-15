@@ -8,6 +8,12 @@ import { BuildQueryOrder, BuildStatus } from "azure-devops-node-api/interfaces/B
 import { EnvironmentStatus } from "azure-devops-node-api/interfaces/ReleaseInterfaces";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  FailureType,
+  Outcome as TestPlanOutcome,
+  PointState,
+  ResultState,
+} from "azure-devops-node-api/interfaces/TestPlanInterfaces";
 import { Operation } from "azure-devops-node-api/interfaces/common/VSSInterfaces";
 import { WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces";
 import {
@@ -80,6 +86,11 @@ function htmlToText(value: string): string {
     }
   }
   return text.replace(/\n{2,}/g, "\n").trim();
+}
+
+/** Name of a numeric enum value; the value itself when it is not a known member. */
+function enumName(enumObject: Record<number, string>, value: number | undefined): string | undefined {
+  return value === undefined ? undefined : enumObject[value] ?? String(value);
 }
 
 const toActionPath = (id: number) => id.toString(16).padStart(8, "0");
@@ -974,13 +985,15 @@ export class TestExecutionService extends AzureDevOpsService {
             isActive: p.isActive,
             isAutomated: p.isAutomated,
             tester: p.tester?.displayName,
-            outcome: p.results?.outcome,
-            state: p.results?.state,
+            // the test plan API reports these as numbers; show the enum names
+            outcome: enumName(TestPlanOutcome, p.results?.outcome),
+            state: enumName(PointState, p.results?.state),
+            lastResultState: enumName(ResultState, p.results?.lastResultState),
             lastRunId: p.results?.lastTestRunId,
             lastResultId: p.results?.lastResultId,
-            lastRunBuild: p.results?.lastRunBuildNumber,
+            lastRunBuild: p.results?.lastRunBuildNumber && p.results.lastRunBuildNumber !== "0" ? p.results.lastRunBuildNumber : undefined,
             lastResultDetails: p.results?.lastResultDetails,
-            failureType: p.results?.failureType,
+            failureType: enumName(FailureType, p.results?.failureType),
             lastResetToActive: p.lastResetToActive,
             lastUpdatedBy: p.lastUpdatedBy?.displayName,
             lastUpdatedDate: p.lastUpdatedDate,
@@ -998,11 +1011,16 @@ export class TestExecutionService extends AzureDevOpsService {
         try {
           const testApi = await this.getTestApi();
           const top = params.historyTop ?? 10;
-          const response = await testApi.getTestResultsByQuery(
-            { resultsFilter: { automatedTestName: "", testPointIds: shown.map((p) => p.pointId), testPlanId: params.planId, resultsCount: top * shown.length } },
-            this.config.project
-          );
-          const results = response?.results || [];
+          // Querying by test point id only returns each point's latest result, so query by test
+          // case (all of its results across runs) and group the results by the point they ran.
+          const results = [];
+          for (const testCaseId of new Set(shown.map((p) => p.testCaseId!))) {
+            const response = await testApi.getTestResultsByQuery(
+              { resultsFilter: { automatedTestName: "", testCaseId, testPlanId: params.planId, resultsCount: Math.max(25, top * 5) } },
+              this.config.project
+            );
+            results.push(...(response?.results || []));
+          }
           const runNames = await this.getRunNames(results.map((r) => Number(r.testRun?.id)));
           history = {};
           for (const r of results) {
