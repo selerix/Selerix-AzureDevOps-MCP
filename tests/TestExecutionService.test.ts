@@ -2658,10 +2658,127 @@ describe('TestExecutionService', () => {
       expect(out).toEqual(expect.objectContaining({ fileName: 'run-a-notes.txt', savePath: target, size: 16 }));
     });
 
-    it('saves into an existing folder under the attachment\'s own name', async () => {
+    it('saves into an existing folder under the attachment id and a safe form of its name', async () => {
       const out = await service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: tmpDir });
-      expect(out.savePath).toBe(path.join(tmpDir, 'run-a-notes.txt'));
+      expect(out.savePath).toBe(path.join(fs.realpathSync(tmpDir), '6-run-a-notes.txt'));
       expect(fs.readFileSync(out.savePath!, 'utf8')).toBe('hello attachment');
+    });
+
+    describe('what a download may overwrite and where it may write', () => {
+      const withName = (id: number, fileName: string) =>
+        testApi.getTestRunAttachments.mockResolvedValue([{ id, fileName, size: 16 }]);
+
+      it('never gives a file the name of a startup or key file just because the uploader chose that name', async () => {
+        for (const [id, name] of [[6, '.bashrc'], [7, 'authorized_keys'], [8, '.env'], [9, 'id_rsa'], [10, '..\\..\\.ssh\\authorized_keys']] as [number, string][]) {
+          withName(id, name);
+          const out = await service.getTestRunAttachment({ runId: 77, attachmentId: id, savePath: tmpDir });
+          const saved = path.basename(out.savePath!);
+          expect(saved.startsWith(`${id}-`)).toBe(true);
+          expect(saved).not.toBe(name);
+          expect(saved.startsWith('.')).toBe(false);
+        }
+        expect(fs.readdirSync(tmpDir).filter((f) => f === '.bashrc' || f === 'authorized_keys' || f === '.env' || f === 'id_rsa')).toEqual([]);
+      });
+
+      it('does not replace a file that is already there, and says how to', async () => {
+        const target = path.join(tmpDir, 'existing.txt');
+        fs.writeFileSync(target, 'precious');
+        await expect(service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: target })).rejects.toThrow(
+          /already exists and was not replaced\. Pass overwrite: true/
+        );
+        expect(fs.readFileSync(target, 'utf8')).toBe('precious');
+        expect(testApi.getTestRunAttachmentContent).not.toHaveBeenCalled(); // refused before anything was fetched
+      });
+
+      it('does not replace the file in a folder either', async () => {
+        const first = await service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: tmpDir });
+        fs.writeFileSync(first.savePath!, 'changed since');
+        await expect(service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: tmpDir })).rejects.toThrow(/already exists/);
+        expect(fs.readFileSync(first.savePath!, 'utf8')).toBe('changed since');
+      });
+
+      it('replaces it only when told to', async () => {
+        const target = path.join(tmpDir, 'existing.txt');
+        fs.writeFileSync(target, 'precious');
+        await service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: target, overwrite: true });
+        expect(fs.readFileSync(target, 'utf8')).toBe('hello attachment');
+      });
+
+      it('creates a file that is not there yet without being told anything', async () => {
+        const target = path.join(tmpDir, 'brand-new.txt');
+        await service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: target });
+        expect(fs.readFileSync(target, 'utf8')).toBe('hello attachment');
+      });
+
+      it('refuses a file outside the allowed folders, before fetching anything', async () => {
+        const outside = path.join(os.homedir(), 'attachment-download-outside-test.txt');
+        await expect(service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: outside })).rejects.toThrow(
+          /outside the folders these tools may write to/
+        );
+        expect(fs.existsSync(outside)).toBe(false);
+        expect(testApi.getTestRunAttachmentContent).not.toHaveBeenCalled();
+      });
+
+      it('refuses a startup or key file name even when the caller names it, inside an allowed folder', async () => {
+        await expect(
+          service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: path.join(tmpDir, 'authorized_keys') })
+        ).rejects.toThrow(/credential or key file/);
+        await expect(
+          service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: path.join(tmpDir, '.ssh', 'id_rsa') })
+        ).rejects.toThrow(/credentials or keys|credential or key file/);
+        expect(fs.readdirSync(tmpDir)).toEqual([]);
+      });
+
+      it('refuses to save into a .ssh folder', async () => {
+        fs.mkdirSync(path.join(tmpDir, '.ssh'));
+        await expect(service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: path.join(tmpDir, '.ssh') })).rejects.toThrow(
+          /holds credentials or keys/
+        );
+      });
+
+      describe('with a configured list of folders', () => {
+        let other: string;
+        beforeEach(() => {
+          other = fs.mkdtempSync(path.join(os.tmpdir(), 'test-exec-other-'));
+        });
+        afterEach(() => {
+          fs.rmSync(other, { recursive: true, force: true });
+        });
+        const serviceAllowing = (dirs: string[]) => {
+          const configured = new TestExecutionService({ ...testConfig, fileAccessDirs: dirs });
+          (configured as any).getTestApi = jest.fn().mockResolvedValue(testApi);
+          return configured;
+        };
+
+        it('writes only inside the listed folders, replacing the default list', async () => {
+          const configured = serviceAllowing([tmpDir]);
+          await configured.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: path.join(tmpDir, 'in.txt') });
+          await expect(
+            configured.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: path.join(other, 'out.txt') })
+          ).rejects.toThrow(/outside the folders/);
+          expect(fs.readdirSync(other)).toEqual([]);
+        });
+
+        it('lets the listed folder be written to even though it is not the working directory or the default temp folder', async () => {
+          const configured = serviceAllowing([other]);
+          const out = await configured.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: other });
+          expect(out.savePath!.startsWith(fs.realpathSync(other))).toBe(true);
+        });
+
+        it('with "*" writes in any folder, which no list would have allowed', async () => {
+          const configured = serviceAllowing(['*']);
+          const out = await configured.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: path.join(other, 'anywhere.txt') });
+          expect(fs.readFileSync(out.savePath!, 'utf8')).toBe('hello attachment');
+        });
+
+        it('with "*" still never writes a credential file', async () => {
+          const configured = serviceAllowing(['*']);
+          await expect(
+            configured.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: path.join(other, '.env') })
+          ).rejects.toThrow(/credential or key file/);
+          expect(fs.readdirSync(other)).toEqual([]);
+        });
+      });
     });
 
     it('returns a small attachment inline as base64', async () => {

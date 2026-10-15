@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { AzureDevOpsConfig } from './Interfaces/AzureDevOps';
+import { parseAllowedDirs } from './utils/fileAccess';
 import { AIAssistedDevelopmentToolMethods } from './Tools/AIAssistedDevelopmentTools';
 import { ArtifactManagementToolMethods } from './Tools/ArtifactManagementTools';
 import { BoardsSprintsToolMethods } from './Tools/BoardsSprintsTools';
@@ -61,6 +62,7 @@ export function getAzureDevOpsConfig(): AzureDevOpsConfig {
   const isOnPremises = process.env.AZURE_DEVOPS_IS_ON_PREMISES === 'true';
   const collection = process.env.AZURE_DEVOPS_COLLECTION;
   const apiVersion = process.env.AZURE_DEVOPS_API_VERSION;
+  const fileAccessDirs = parseAllowedDirs(process.env.AZURE_DEVOPS_FILE_ACCESS_DIRS);
   
   // Basic validation
   if (!orgUrl || !project) {
@@ -151,6 +153,7 @@ export function getAzureDevOpsConfig(): AzureDevOpsConfig {
     isOnPremises,
     collection,
     apiVersion,
+    ...(fileAccessDirs && { fileAccessDirs }),
     ...(auth && { auth })
   };
 }

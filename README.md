@@ -331,6 +331,7 @@ For Azure DevOps Server (on-premises), create the PAT in your on-premises instan
 | AZURE_DEVOPS_IS_ON_PREMISES | Whether using Azure DevOps Server | No | false |
 | AZURE_DEVOPS_COLLECTION | Collection name for on-premises | No* | - |
 | AZURE_DEVOPS_API_VERSION | API version for on-premises | No | - |
+| AZURE_DEVOPS_FILE_ACCESS_DIRS | Folders the test execution tools may read attachments from and save them to, separated like PATH (`;` on Windows, `:` elsewhere); `*` lifts the folder limit. Credential and key files are always refused | No | working directory and system temp folder |
 | AZURE_DEVOPS_AUTH_TYPE | Authentication type (pat/ntlm/basic/entra) | No | pat |
 | AZURE_DEVOPS_PERSONAL_ACCESS_TOKEN | Personal access token (for 'pat' auth) | No** | - |
 | AZURE_DEVOPS_USERNAME | Username for NTLM/Basic auth | No** | - |

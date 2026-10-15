@@ -286,8 +286,14 @@ export interface ListTestRunAttachmentsParams {
 export interface GetTestRunAttachmentParams {
   runId: number;
   attachmentId: number;
-  /** File (or existing folder) to write the attachment to; without it the content is returned as base64 if it is small */
+  /**
+   * File (or existing folder) to write the attachment to; without it the content is returned as base64 if it is small.
+   * Must be inside an allowed folder (see AZURE_DEVOPS_FILE_ACCESS_DIRS). Given a folder, the file is saved as
+   * "<attachment id>-<its name, made safe>", since the name was chosen by whoever uploaded it.
+   */
   savePath?: string;
+  /** Replace a file that already exists at savePath (default false: an existing file is never replaced) */
+  overwrite?: boolean;
 }
 
 export interface DeleteTestRunAttachmentParams {

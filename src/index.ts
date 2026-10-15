@@ -2486,11 +2486,12 @@ async function main() {
     );
 
     allowedTools.has("getTestRunAttachment") && server.tool("getTestRunAttachment",
-      "Download a test run attachment to a file (savePath), or return small ones inline as base64. Get the attachment id from listTestRunAttachments.",
+      "Download a test run attachment to a file (savePath), or return small ones inline as base64. savePath must be inside an allowed folder, and an existing file is not replaced unless overwrite is true. Get the attachment id from listTestRunAttachments.",
       {
         runId: idSchema.describe("ID of the test run"),
         attachmentId: idSchema.describe("ID of the attachment (from listTestRunAttachments)"),
-        savePath: z.string().optional().describe("File to write to, or an existing folder (the attachment's own file name is used); without it the content comes back as base64 if it is under 64 KB")
+        savePath: z.string().optional().describe("File to write to, or an existing folder (the file is then saved as '<attachment id>-<its name, made safe>'); must be inside an allowed folder. Without it the content comes back as base64 if it is under 64 KB"),
+        overwrite: z.boolean().optional().describe("Replace a file that already exists at savePath (default false)")
       },
       async (params, extra) => {
         const result = await testExecutionTools.getTestRunAttachment(params);

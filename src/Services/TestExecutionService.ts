@@ -8,6 +8,7 @@ import { ITestResultsApi } from "azure-devops-node-api/TestResultsApi";
 import { BuildQueryOrder, BuildStatus } from "azure-devops-node-api/interfaces/BuildInterfaces";
 import { EnvironmentStatus } from "azure-devops-node-api/interfaces/ReleaseInterfaces";
 import { downloadStreamToFile } from "../utils/downloadStreamToFile";
+import { assertDownloadAllowed, effectiveAllowedDirs, safeDownloadName } from "../utils/fileAccess";
 import { readStreamWithLimit } from "../utils/readStreamWithLimit";
 import * as fs from "fs";
 import * as path from "path";
@@ -1329,13 +1330,25 @@ export class TestExecutionService extends AzureDevOpsService {
       const attachment = await this.findTestRunAttachment(params.runId, params.attachmentId);
       const fileName = attachment.fileName || `attachment-${attachment.id}`;
       const testApi = await this.getTestApi();
-      const stream = await testApi.getTestRunAttachmentContent(this.config.project, params.runId, params.attachmentId);
 
+      // Where it is saved is settled, and refused if it is not allowed, before any content is fetched.
+      let target: string | undefined;
       if (params.savePath) {
-        // an existing folder gets the attachment's own file name
-        const isFolder = fs.existsSync(params.savePath) && fs.statSync(params.savePath).isDirectory();
-        const target = isFolder ? path.join(params.savePath, path.basename(fileName)) : params.savePath;
-        const { savePath, size } = await downloadStreamToFile(stream, target);
+        const requested = path.resolve(params.savePath);
+        // Into a folder, the name was chosen by whoever uploaded the attachment, so it is made safe
+        // (never a dotfile or a startup or key file name); into a path the caller names, it is theirs.
+        const isFolder = fs.existsSync(requested) && fs.statSync(requested).isDirectory();
+        const candidate = isFolder ? path.join(requested, safeDownloadName(attachment.id, fileName)) : requested;
+        target = assertDownloadAllowed(candidate, effectiveAllowedDirs(this.config.fileAccessDirs));
+        if (fs.existsSync(target) && !params.overwrite) {
+          throw new Error(`${target} already exists and was not replaced. Pass overwrite: true to replace it, or choose another name.`);
+        }
+      }
+
+      const stream = await testApi.getTestRunAttachmentContent(this.config.project, params.runId, params.attachmentId);
+      if (target) {
+        // overwrite: false creates the file exclusively, so one that appears meanwhile is not replaced either
+        const { savePath, size } = await downloadStreamToFile(stream, target, { overwrite: params.overwrite === true });
         return { runId: params.runId, attachmentId: attachment.id, fileName, savePath, size };
       }
 
