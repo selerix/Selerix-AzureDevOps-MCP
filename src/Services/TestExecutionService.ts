@@ -8,9 +8,17 @@ import { BuildQueryOrder, BuildStatus } from "azure-devops-node-api/interfaces/B
 import { EnvironmentStatus } from "azure-devops-node-api/interfaces/ReleaseInterfaces";
 import * as fs from "fs";
 import * as path from "path";
+import { Operation } from "azure-devops-node-api/interfaces/common/VSSInterfaces";
+import { WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces";
+import {
+  GetTestCaseExecutionHistoryParams,
+  GetTestRunsParams,
+  LinkTestRunToWorkItemsParams,
+} from "../Interfaces/TestExecution";
 import {
   PointUpdateModel,
   ResultDetails,
+  TestRun,
   TestActionResultModel,
   TestAttachmentRequestModel,
 } from "azure-devops-node-api/interfaces/TestInterfaces";
@@ -692,6 +700,153 @@ export class TestExecutionService extends AzureDevOpsService {
       console.error("Error resetting tests to active:", error);
       throw error;
     }
+  }
+
+  private summarizeRun(run: TestRun) {
+    return {
+      runId: run.id,
+      name: run.name,
+      state: run.state,
+      isAutomated: run.isAutomated,
+      owner: run.owner?.displayName,
+      plan: run.plan?.name,
+      startedDate: run.startedDate,
+      completedDate: run.completedDate,
+      totalTests: run.totalTests,
+      passedTests: run.passedTests,
+      incompleteTests: run.incompleteTests,
+      unanalyzedTests: run.unanalyzedTests,
+      build: run.build?.id ? { id: run.build.id, name: run.build.name } : undefined,
+      release: run.release?.id ? { id: run.release.id, name: run.release.name } : undefined,
+      url: run.webAccessUrl,
+    };
+  }
+
+  public async getTestRuns(params: GetTestRunsParams) {
+    try {
+      const testApi = await this.getTestApi();
+      if (params.runId !== undefined) {
+        const run = await testApi.getTestRunById(this.config.project, params.runId, true);
+        const results = await testApi.getTestResults(this.config.project, params.runId);
+        return {
+          runs: [this.summarizeRun(run)],
+          results: results.map((r) => ({
+            resultId: r.id,
+            testCaseId: r.testCase?.id ? Number(r.testCase.id) : undefined,
+            testCaseTitle: r.testCaseTitle,
+            outcome: r.outcome,
+            state: r.state,
+            runBy: r.runBy?.displayName,
+          })),
+        };
+      }
+      const runs = await testApi.getTestRuns(
+        this.config.project,
+        params.buildId !== undefined ? `vstfs:///Build/Build/${params.buildId}` : undefined,
+        params.owner,
+        undefined,
+        params.planId,
+        false,
+        params.automated,
+        undefined,
+        params.top ?? 25
+      );
+      return { runs: (runs || []).map((r) => this.summarizeRun(r)) };
+    } catch (error) {
+      console.error("Error getting test runs:", error);
+      throw error;
+    }
+  }
+
+  public async getTestCaseExecutionHistory(params: GetTestCaseExecutionHistoryParams) {
+    try {
+      const testApi = await this.getTestApi();
+      const response = await testApi.getTestResultsByQuery(
+        {
+          resultsFilter: {
+            automatedTestName: "",
+            testCaseId: params.testCaseId,
+            testPlanId: params.planId,
+            resultsCount: params.top ?? 25,
+          },
+        },
+        this.config.project
+      );
+      const results = response?.results || [];
+      return {
+        testCaseId: params.testCaseId,
+        count: results.length,
+        executions: results.map((r) => ({
+          runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
+          runName: r.testRun?.name,
+          resultId: r.id,
+          outcome: r.outcome,
+          state: r.state,
+          runBy: r.runBy?.displayName,
+          completedDate: r.completedDate,
+          configuration: r.configuration?.name,
+          build: r.build?.name,
+          associatedBugs: (r.associatedBugs || []).map((b) => Number(b.id)),
+        })),
+      };
+    } catch (error) {
+      console.error(`Error getting execution history for test case ${params.testCaseId}:`, error);
+      throw error;
+    }
+  }
+
+  public async linkTestRunToWorkItems(params: LinkTestRunToWorkItemsParams) {
+    try {
+      if (!params.workItemIds || params.workItemIds.length === 0) {
+        throw new Error("workItemIds must contain at least one work item id");
+      }
+      const testApi = await this.getTestApi();
+      const run = await testApi.getTestRunById(this.config.project, params.runId);
+
+      const resultIds =
+        params.resultId !== undefined
+          ? [params.resultId]
+          : (await testApi.getTestResults(this.config.project, params.runId)).map((r) => r.id!);
+
+      // associatedBugs replaces the list, so merge with what each result already has.
+      const updates = [];
+      for (const resultId of resultIds) {
+        const existing = await testApi.getTestResultById(this.config.project, params.runId, resultId, ResultDetails.WorkItems);
+        const ids = new Set((existing.associatedBugs || []).map((b) => String(b.id)));
+        params.workItemIds.forEach((id) => ids.add(String(id)));
+        updates.push({ id: resultId, associatedBugs: [...ids].map((id) => ({ id })) });
+      }
+      await testApi.updateTestResults(updates, this.config.project, params.runId);
+
+      const hyperlinked: number[] = [];
+      if (params.addRunHyperlink !== false && run.webAccessUrl) {
+        for (const workItemId of params.workItemIds) {
+          if (await this.addRunHyperlink(workItemId, run.webAccessUrl, `Test run ${params.runId}: ${run.name}`)) {
+            hyperlinked.push(workItemId);
+          }
+        }
+      }
+      return { runId: params.runId, resultsLinked: resultIds, workItemIds: params.workItemIds, hyperlinked };
+    } catch (error) {
+      console.error(`Error linking test run ${params.runId} to work items:`, error);
+      throw error;
+    }
+  }
+
+  /** Add a hyperlink to a run on a work item unless one is already there. Returns true when added. */
+  protected async addRunHyperlink(workItemId: number, url: string, comment: string): Promise<boolean> {
+    const witApi = await this.getWorkItemTrackingApi();
+    const workItem = await witApi.getWorkItem(workItemId, undefined, undefined, WorkItemExpand.Relations, this.config.project);
+    if ((workItem.relations || []).some((r) => r.rel === "Hyperlink" && r.url === url)) {
+      return false;
+    }
+    await witApi.updateWorkItem(
+      undefined,
+      [{ op: Operation.Add, path: "/relations/-", value: { rel: "Hyperlink", url, attributes: { comment } } }],
+      workItemId,
+      this.config.project
+    );
+    return true;
   }
 
   // __METHODS__

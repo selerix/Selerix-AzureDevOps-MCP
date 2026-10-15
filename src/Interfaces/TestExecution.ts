@@ -157,6 +157,34 @@ export interface AssignTesterParams extends TestPointSelection {
 
 export type ResetTestToActiveParams = TestPointSelection;
 
+export interface GetTestRunsParams {
+  /** Return this single run, with its results */
+  runId?: number;
+  planId?: number;
+  buildId?: number;
+  /** Runs started by this identity (display name or unique name) */
+  owner?: string;
+  automated?: boolean;
+  /** Maximum runs to return (default 25) */
+  top?: number;
+}
+
+export interface GetTestCaseExecutionHistoryParams {
+  testCaseId: number;
+  planId?: number;
+  /** Maximum results to return (default 25) */
+  top?: number;
+}
+
+export interface LinkTestRunToWorkItemsParams {
+  runId: number;
+  /** Link a single result; every result in the run when omitted */
+  resultId?: number;
+  workItemIds: number[];
+  /** Also add a hyperlink to the run on each work item (default true) */
+  addRunHyperlink?: boolean;
+}
+
 export interface StartedTestResult {
   resultId: number;
   testCaseId?: number;
