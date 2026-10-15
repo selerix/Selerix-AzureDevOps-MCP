@@ -78,24 +78,41 @@ function htmlToText(value: string): string {
   return text.replace(/\n{2,}/g, "\n").trim();
 }
 
+const toActionPath = (id: number) => id.toString(16).padStart(8, "0");
+
 /**
- * Parse the Microsoft.VSTS.TCM.Steps XML of a test case into steps. Shared-step references
- * (<compref>) are not expanded - their ids are skipped, so recording results against steps
- * inside a shared step set is not supported.
+ * Parse the Microsoft.VSTS.TCM.Steps XML of a test case (or shared step set) into rows, in
+ * document order. A <compref> shared-step reference becomes a SharedStepReference row whose
+ * children are not known here - see TestExecutionService.expandSteps.
  */
 export function parseTestSteps(stepsXml: string | undefined): ParsedTestStep[] {
   if (!stepsXml) {
     return [];
   }
   const steps: ParsedTestStep[] = [];
-  const stepRegex = /<step\s+id="(\d+)"\s+type="(ActionStep|ValidateStep)"[^>]*>([\s\S]*?)<\/step>/g;
+  const rowRegex =
+    /<step\s+id="(\d+)"\s+type="(ActionStep|ValidateStep)"[^>]*>([\s\S]*?)<\/step>|<compref\s+id="(\d+)"\s+ref="(\d+)"\s*\/>/g;
   let match: RegExpExecArray | null;
-  while ((match = stepRegex.exec(stepsXml)) !== null) {
+  while ((match = rowRegex.exec(stepsXml)) !== null) {
+    if (match[4] !== undefined) {
+      const id = parseInt(match[4], 10);
+      steps.push({
+        id,
+        identifier: String(id),
+        actionPath: toActionPath(id),
+        type: "SharedStepReference",
+        action: "",
+        expectedResult: "",
+        sharedStepId: parseInt(match[5], 10),
+      });
+      continue;
+    }
     const strings = [...match[3].matchAll(/<parameterizedString[^>]*>([\s\S]*?)<\/parameterizedString>/g)].map((m) => m[1]);
     const id = parseInt(match[1], 10);
     steps.push({
       id,
-      actionPath: id.toString(16).padStart(8, "0"),
+      identifier: String(id),
+      actionPath: toActionPath(id),
       type: match[2] as ParsedTestStep["type"],
       action: htmlToText(strings[0] ?? ""),
       expectedResult: htmlToText(strings[1] ?? ""),
@@ -374,11 +391,56 @@ export class TestExecutionService extends AzureDevOpsService {
     return { id: release.id, name: release.name, stage: stage.name! };
   }
 
-  /** Fetch a test case's steps from its work item. */
+  /**
+   * Parse a steps field and expand each shared-step reference into the reference row followed by
+   * the steps of the shared set, with paths and identifiers as the web UI records them
+   * (child path = parent path + child path, identifier "parent;child").
+   */
+  protected async expandSteps(stepsXml: string | undefined): Promise<ParsedTestStep[]> {
+    const rows = parseTestSteps(stepsXml);
+    if (!rows.some((r) => r.type === "SharedStepReference")) {
+      return rows;
+    }
+    const witApi = await this.getWorkItemTrackingApi();
+    const expanded: ParsedTestStep[] = [];
+    for (const row of rows) {
+      if (row.type !== "SharedStepReference") {
+        expanded.push(row);
+        continue;
+      }
+      const shared = await witApi.getWorkItem(
+        row.sharedStepId!,
+        ["Microsoft.VSTS.TCM.Steps", "System.Title"],
+        undefined,
+        undefined,
+        this.config.project
+      );
+      expanded.push({
+        ...row,
+        action: `Shared steps: ${shared?.fields?.["System.Title"] ?? row.sharedStepId}`,
+        sharedStepRevision: shared?.rev,
+      });
+      for (const child of parseTestSteps(shared?.fields?.["Microsoft.VSTS.TCM.Steps"])) {
+        if (child.type === "SharedStepReference") {
+          continue; // shared step sets can't contain other shared step sets
+        }
+        expanded.push({
+          ...child,
+          identifier: `${row.identifier};${child.id}`,
+          actionPath: row.actionPath + child.actionPath,
+          sharedStepId: row.sharedStepId,
+          parentIdentifier: row.identifier,
+        });
+      }
+    }
+    return expanded;
+  }
+
+  /** Fetch a test case's steps (shared steps expanded) from its work item. */
   protected async getTestCaseSteps(testCaseId: number): Promise<ParsedTestStep[]> {
     const witApi = await this.getWorkItemTrackingApi();
     const workItem = await witApi.getWorkItem(testCaseId, ["Microsoft.VSTS.TCM.Steps"], undefined, undefined, this.config.project);
-    return parseTestSteps(workItem?.fields?.["Microsoft.VSTS.TCM.Steps"]);
+    return await this.expandSteps(workItem?.fields?.["Microsoft.VSTS.TCM.Steps"]);
   }
 
   protected async getResultWithIterations(runId: number, resultId: number) {
@@ -406,10 +468,12 @@ export class TestExecutionService extends AzureDevOpsService {
           ? unmatched.map((a) => ({ actionPath: a.actionPath, outcome: a.outcome, comment: a.errorMessage }))
           : undefined;
         steps = testCaseSteps.map((s) => ({
-          stepId: s.id,
+          // a number for a top-level step, "3;5" for a step inside a shared set
+          stepId: s.parentIdentifier ? s.identifier : s.id,
           type: s.type,
           action: s.action,
           expectedResult: s.expectedResult,
+          sharedStepId: s.sharedStepId,
           outcome: recorded.get(s.actionPath)?.outcome,
           comment: recorded.get(s.actionPath)?.errorMessage,
         }));
@@ -450,7 +514,7 @@ export class TestExecutionService extends AzureDevOpsService {
         throw new Error(`Result ${params.resultId} has no test case`);
       }
       const steps = await this.getTestCaseSteps(Number(result.testCase.id));
-      const byId = new Map(steps.map((s) => [s.id, s]));
+      const byId = new Map(steps.map((s) => [s.identifier, s]));
 
       const updates = new Map<string, { outcome: string; comment?: string }>();
       if (params.allStepsOutcome) {
@@ -459,9 +523,9 @@ export class TestExecutionService extends AzureDevOpsService {
         }
       }
       for (const u of params.steps || []) {
-        const step = byId.get(u.stepId);
+        const step = byId.get(String(u.stepId));
         if (!step) {
-          throw new Error(`Step ${u.stepId} not found on test case ${result.testCase.id}. Steps: ${steps.map((s) => s.id).join(", ")}`);
+          throw new Error(`Step ${u.stepId} not found on test case ${result.testCase.id}. Steps: ${steps.map((s) => s.identifier).join(", ")}`);
         }
         updates.set(step.actionPath, { outcome: u.outcome, comment: u.comment });
       }
@@ -478,7 +542,8 @@ export class TestExecutionService extends AzureDevOpsService {
         actionResults.set(actionPath, {
           actionPath,
           iterationId,
-          stepIdentifier: String(step.id),
+          stepIdentifier: step.identifier,
+          ...(step.type === "SharedStepReference" && { sharedStepModel: { id: step.sharedStepId!, revision: step.sharedStepRevision ?? 1 } }),
           outcome: update.outcome,
           // The web runner shows a step's comment from errorMessage.
           errorMessage: update.comment ?? "",
@@ -605,7 +670,7 @@ export class TestExecutionService extends AzureDevOpsService {
       let reference;
       if (params.stepId !== undefined) {
         const result = await this.getResultWithIterations(params.runId, params.resultId);
-        const step = (await this.getTestCaseSteps(Number(result.testCase?.id))).find((s) => s.id === params.stepId);
+        const step = (await this.getTestCaseSteps(Number(result.testCase?.id))).find((s) => s.identifier === String(params.stepId));
         if (!step) {
           throw new Error(`Step ${params.stepId} not found on test case ${result.testCase?.id}`);
         }
@@ -925,7 +990,7 @@ export class TestExecutionService extends AzureDevOpsService {
       throw new Error(`Result ${resultId} in run ${runId} has no test case`);
     }
     const testCase = await witApi.getWorkItem(testCaseId, undefined, undefined, undefined, this.config.project);
-    const steps = parseTestSteps(testCase.fields?.["Microsoft.VSTS.TCM.Steps"]);
+    const steps = await this.expandSteps(testCase.fields?.["Microsoft.VSTS.TCM.Steps"]);
     const recorded = new Map((result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath?.toLowerCase(), a]));
 
     const title = result.testCaseTitle || testCase.fields?.["System.Title"] || `Test case ${testCaseId}`;
@@ -937,7 +1002,8 @@ export class TestExecutionService extends AzureDevOpsService {
       const mark = r?.outcome === "Failed" ? " <b>[FAILED]</b>" : r?.outcome === "Passed" ? " [passed]" : "";
       const comment = r?.outcome === "Failed" && r.errorMessage ? `<br/><i>Comment:</i> ${e(r.errorMessage)}` : "";
       const expected = s.expectedResult ? `<br/><i>Expected:</i> ${e(s.expectedResult)}` : "";
-      return `<li>${e(s.action)}${mark}${expected}${comment}</li>`;
+      const indent = s.parentIdentifier ? "&nbsp;&nbsp;&nbsp;" : "";
+      return `<li>${indent}${e(s.action)}${mark}${expected}${comment}</li>`;
     });
 
     const parts = [

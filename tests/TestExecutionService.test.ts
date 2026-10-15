@@ -12,6 +12,19 @@ const testConfig: AzureDevOpsConfig = {
   auth: { type: 'pat' }
 };
 
+// A test case with a reference (step 2) to shared step set work item 49, which has two steps.
+const SHARED_STEPS_XML =
+  '<steps id="0" last="3">' +
+  '<step id="1" type="ValidateStep"><parameterizedString isformatted="true">Start</parameterizedString><parameterizedString isformatted="true"></parameterizedString><description/></step>' +
+  '<compref id="2" ref="49" />' +
+  '<step id="3" type="ActionStep"><parameterizedString isformatted="true">Finish</parameterizedString><parameterizedString isformatted="true"></parameterizedString><description/></step>' +
+  '</steps>';
+const SHARED_SET_XML =
+  '<steps id="0" last="2">' +
+  '<step id="1" type="ActionStep"><parameterizedString isformatted="true">Open login</parameterizedString><parameterizedString isformatted="true"></parameterizedString><description/></step>' +
+  '<step id="2" type="ActionStep"><parameterizedString isformatted="true">Sign in</parameterizedString><parameterizedString isformatted="true"></parameterizedString><description/></step>' +
+  '</steps>';
+
 const STEPS_XML =
   '<steps id="0" last="3">' +
   '<step id="2" type="ValidateStep"><parameterizedString isformatted="true">&lt;DIV&gt;&lt;P&gt;Open the page&amp;nbsp;&lt;/P&gt;&lt;/DIV&gt;</parameterizedString>' +
@@ -24,8 +37,17 @@ describe('parseTestSteps', () => {
   it('parses ids, types and decodes HTML-encoded text', () => {
     const steps = parseTestSteps(STEPS_XML);
     expect(steps).toEqual([
-      { id: 2, actionPath: '00000002', type: 'ValidateStep', action: 'Open the page', expectedResult: 'Page loads' },
-      { id: 3, actionPath: '00000003', type: 'ActionStep', action: 'Click save', expectedResult: '' }
+      { id: 2, identifier: '2', actionPath: '00000002', type: 'ValidateStep', action: 'Open the page', expectedResult: 'Page loads' },
+      { id: 3, identifier: '3', actionPath: '00000003', type: 'ActionStep', action: 'Click save', expectedResult: '' }
+    ]);
+  });
+
+  it('returns a shared step reference as its own row, in document order', () => {
+    const steps = parseTestSteps(SHARED_STEPS_XML);
+    expect(steps.map((s) => [s.identifier, s.type, s.sharedStepId])).toEqual([
+      ['1', 'ValidateStep', undefined],
+      ['2', 'SharedStepReference', 49],
+      ['3', 'ActionStep', undefined]
     ]);
   });
 
@@ -178,6 +200,78 @@ describe('TestExecutionService', () => {
         })
       ).rejects.toThrow('Available stages: Dev, Stage');
       expect(releaseApi.createRelease).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('shared steps', () => {
+    beforeEach(() => {
+      witApi.getWorkItem.mockImplementation(async (id: number) =>
+        id === 49
+          ? { id: 49, rev: 4, fields: { 'System.Title': 'Login', 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML } }
+          : { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': SHARED_STEPS_XML, 'System.Title': 'Save works' } }
+      );
+    });
+
+    it('reads a result with the shared set expanded and the web UI\'s recorded outcomes on its steps', async () => {
+      testApi.getTestResultById.mockResolvedValue(
+        resultWithIteration([
+          { actionPath: '00000002', outcome: 'Passed' },
+          { actionPath: '0000000200000001', outcome: 'Passed' },
+          { actionPath: '0000000200000002', outcome: 'Failed', errorMessage: 'bad password' }
+        ])
+      );
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(out.steps!.map((s) => [s.stepId, s.type, s.outcome])).toEqual([
+        [1, 'ValidateStep', undefined],
+        [2, 'SharedStepReference', 'Passed'],
+        ['2;1', 'ActionStep', 'Passed'],
+        ['2;2', 'ActionStep', 'Failed'],
+        [3, 'ActionStep', undefined]
+      ]);
+      expect(out.steps![1].action).toBe('Shared steps: Login');
+      expect(out.steps![3].comment).toBe('bad password');
+      expect(out.unmatchedStepResults).toBeUndefined();
+    });
+
+    it('marks a step inside a shared set using the parent+child path and records the set revision on the reference', async () => {
+      testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+      await service.setTestStepResults({
+        runId: 77, resultId: 100000,
+        steps: [{ stepId: '2;2', outcome: 'Failed', comment: 'bad password' }, { stepId: 2, outcome: 'Passed' }]
+      });
+      const actionResults = testApi.updateTestResults.mock.calls[0][0][0].iterationDetails[0].actionResults;
+      expect(actionResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ actionPath: '0000000200000002', stepIdentifier: '2;2', outcome: 'Failed', errorMessage: 'bad password' }),
+        expect.objectContaining({ actionPath: '00000002', stepIdentifier: '2', sharedStepModel: { id: 49, revision: 4 } })
+      ]));
+    });
+
+    it('allStepsOutcome marks the references and every step inside them', async () => {
+      testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+      const out = await service.setTestStepResults({ runId: 77, resultId: 100000, allStepsOutcome: 'Passed' });
+      expect(out.stepsUpdated).toBe(5);
+      expect(out.iterationOutcome).toBe('Passed');
+    });
+
+    it('does not report Passed while steps inside a shared set are unmarked', async () => {
+      testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+      const out = await service.setTestStepResults({
+        runId: 77, resultId: 100000, steps: [{ stepId: 1, outcome: 'Passed' }, { stepId: 3, outcome: 'Passed' }]
+      });
+      expect(out.iterationOutcome).not.toBe('Passed');
+    });
+
+    it('attaches to a step inside a shared set through its combined path', async () => {
+      testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+      await service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt', stepId: '2;1' });
+      expect(testApi.createTestIterationResultAttachment).toHaveBeenCalledWith(expect.anything(), 'Engineering', 77, 100000, 1, '0000000200000001');
+    });
+
+    it('lists the identifiers when a step is not found', async () => {
+      testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+      await expect(
+        service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: '2;9', outcome: 'Passed' }] })
+      ).rejects.toThrow('Steps: 1, 2, 2;1, 2;2, 3');
     });
   });
 

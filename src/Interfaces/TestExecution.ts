@@ -6,15 +6,27 @@ export type TestResultOutcome = "Passed" | "Failed" | "Paused" | "Blocked" | "No
 /** Outcomes a tester can record against a single test step. */
 export type TestStepOutcome = "Passed" | "Failed";
 
-/** A test case step parsed out of the test case's Microsoft.VSTS.TCM.Steps field. */
+/**
+ * A test case step parsed out of the test case's Microsoft.VSTS.TCM.Steps field. A reference to a
+ * shared step set is a row of its own (type SharedStepReference) followed by one row per step
+ * inside the set.
+ */
 export interface ParsedTestStep {
-  /** Step id as stored in the steps XML (1-based within the test case) */
+  /** Step id as stored in the steps XML, within its own level */
   id: number;
-  /** Zero-padded 8-digit action path used by the results API, e.g. "00000002" */
+  /** ADO's step identifier: "5" for a top-level step, "3;5" for step 5 inside the shared set at step 3 */
+  identifier: string;
+  /** Lowercase 8-digit hex path used by the results API, e.g. "0000000a"; a shared-set child is parent path + child path */
   actionPath: string;
-  type: "ActionStep" | "ValidateStep";
+  type: "ActionStep" | "ValidateStep" | "SharedStepReference";
   action: string;
   expectedResult: string;
+  /** Work item id of the shared step set (SharedStepReference rows and their children) */
+  sharedStepId?: number;
+  /** Revision of the shared step set work item (SharedStepReference rows only) */
+  sharedStepRevision?: number;
+  /** Identifier of the SharedStepReference row a child belongs to */
+  parentIdentifier?: string;
 }
 
 /** Test point that a run was (or will be) created for. */
@@ -74,8 +86,8 @@ export interface GetTestResultParams extends TestResultRef {
 }
 
 export interface StepOutcomeUpdate {
-  /** Step id as shown by getTestResult (1-based within the test case) */
-  stepId: number;
+  /** Step id as shown by getTestResult: a number for a top-level step, "3;5" for a step inside a shared set */
+  stepId: number | string;
   outcome: TestStepOutcome;
   /** Comment shown on the step; mainly useful on a failing step */
   comment?: string;
@@ -115,7 +127,7 @@ export interface AttachmentContentParams {
 export interface AddTestResultAttachmentParams extends TestResultRef, AttachmentContentParams {
   kind?: TestAttachmentKind;
   /** Attach to a single step instead of the whole result */
-  stepId?: number;
+  stepId?: number | string;
 }
 
 export interface AddTestRunAttachmentParams extends AttachmentContentParams {

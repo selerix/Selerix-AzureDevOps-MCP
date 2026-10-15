@@ -2374,7 +2374,7 @@ async function main() {
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         steps: z.array(z.object({
-          stepId: z.number().describe("Step id as shown by getTestResult"),
+          stepId: z.union([z.number(), z.string()]).describe("Step id as shown by getTestResult: a number, or '3;5' for step 5 inside the shared step set at step 3"),
           outcome: z.enum(["Passed", "Failed"]),
           comment: z.string().optional().describe("Comment for the step, e.g. why it failed")
         })).optional().describe("Selected steps to mark"),
@@ -2435,7 +2435,7 @@ async function main() {
         fileName: z.string().optional().describe("File name; defaults to the file's own name"),
         comment: z.string().optional().describe("Comment stored with the attachment"),
         kind: z.enum(["screenshot", "recording", "file"]).optional().describe("Validates the file type: screenshot = image, recording = video"),
-        stepId: z.number().optional().describe("Attach to this step instead of the whole result")
+        stepId: z.union([z.number(), z.string()]).optional().describe("Attach to this step instead of the whole result (number, or '3;5' for a step inside a shared step set)")
       },
       async (params, extra) => {
         const result = await testExecutionTools.addTestResultAttachment(params);
