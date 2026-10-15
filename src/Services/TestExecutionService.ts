@@ -1078,9 +1078,13 @@ export class TestExecutionService extends AzureDevOpsService {
       }
 
       const all = [...actionResults.values(), ...withoutPath];
+      // A shared-step reference row has no outcome of its own to wait for (marking only the steps
+      // inside the set leaves it at None), so the iteration passes when every actual step passed. A
+      // reference row that was marked Failed still fails the iteration, through the check above.
+      const checkable = steps.filter((s) => s.type !== "SharedStepReference");
       const iterationOutcome = all.some((a) => a.outcome === "Failed")
         ? "Failed"
-        : steps.length > 0 && steps.every((s) => actionResults.get(s.actionPath)?.outcome === "Passed")
+        : checkable.length > 0 && checkable.every((s) => actionResults.get(s.actionPath)?.outcome === "Passed")
           ? "Passed"
           : iteration?.outcome ?? "None";
 

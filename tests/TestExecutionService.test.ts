@@ -1373,6 +1373,63 @@ describe('TestExecutionService', () => {
       expect(out.iterationOutcome).toBe('Passed');
     });
 
+    describe('the iteration outcome when only the steps inside a shared set are marked', () => {
+      // rows: 1, shared reference 2 (steps 2;1 and 2;2), 3
+      const mark = (steps: { stepId: number | string; outcome: 'Passed' | 'Failed' }[]) =>
+        service.setTestStepResults({ runId: 77, resultId: 100000, steps });
+
+      it('is Passed once every real step passes, without marking the reference row itself', async () => {
+        testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+        const out = await mark([
+          { stepId: 1, outcome: 'Passed' }, { stepId: '2;1', outcome: 'Passed' }, { stepId: '2;2', outcome: 'Passed' }, { stepId: 3, outcome: 'Passed' }
+        ]);
+        expect(out.iterationOutcome).toBe('Passed');
+        // the reference row is still created, with the pinned revision, but has no outcome of its own
+        const sent = testApi.updateTestResults.mock.calls[0][0][0].iterationDetails[0];
+        expect(sent.outcome).toBe('Passed');
+        expect(sent.actionResults.find((a: any) => a.actionPath === '00000002')).toEqual(
+          expect.objectContaining({ outcome: 'None', sharedStepModel: { id: 49, revision: 4 } })
+        );
+      });
+
+      it('is Passed when the steps are marked over several calls', async () => {
+        let stored: any = resultWithIteration();
+        testApi.getTestResultById.mockImplementation(async () => JSON.parse(JSON.stringify(stored)));
+        testApi.updateTestResults.mockImplementation(async (updates: any[]) => {
+          stored = { ...stored, iterationDetails: updates[0].iterationDetails };
+          return [stored];
+        });
+        await mark([{ stepId: 1, outcome: 'Passed' }, { stepId: '2;1', outcome: 'Passed' }]);
+        await mark([{ stepId: '2;2', outcome: 'Passed' }]);
+        const out = await mark([{ stepId: 3, outcome: 'Passed' }]);
+        expect(out.iterationOutcome).toBe('Passed');
+      });
+
+      it('is still not Passed while a step inside the shared set is unmarked', async () => {
+        testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+        const out = await mark([{ stepId: 1, outcome: 'Passed' }, { stepId: '2;1', outcome: 'Passed' }, { stepId: 3, outcome: 'Passed' }]);
+        expect(out.iterationOutcome).not.toBe('Passed');
+      });
+
+      it('is Failed when a step inside the shared set fails', async () => {
+        testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+        const out = await mark([{ stepId: 1, outcome: 'Passed' }, { stepId: '2;1', outcome: 'Failed' }]);
+        expect(out.iterationOutcome).toBe('Failed');
+      });
+
+      it('is Failed when the reference row itself is marked Failed', async () => {
+        testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+        const out = await mark([{ stepId: 2, outcome: 'Failed' }]);
+        expect(out.iterationOutcome).toBe('Failed');
+      });
+
+      it('is still not Passed when nothing but the reference row is marked', async () => {
+        testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+        const out = await mark([{ stepId: 2, outcome: 'Passed' }]);
+        expect(out.iterationOutcome).not.toBe('Passed');
+      });
+    });
+
     it('does not report Passed while steps inside a shared set are unmarked', async () => {
       testApi.getTestResultById.mockResolvedValue(resultWithIteration());
       const out = await service.setTestStepResults({
