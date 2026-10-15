@@ -21,6 +21,7 @@ import {
 import {
   PointUpdateModel,
   ResultDetails,
+  TestCaseResult,
   TestRun,
   TestActionResultModel,
   TestAttachmentRequestModel,
@@ -561,10 +562,10 @@ export class TestExecutionService extends AzureDevOpsService {
 
       const updated = await testApi.updateTestResults(
         [
-          {
+          await this.buildResultUpdate(result, {
             id: params.resultId,
             iterationDetails: [{ id: iterationId, outcome: iterationOutcome, actionResults: all }],
-          },
+          }),
         ],
         this.config.project,
         params.runId
@@ -587,15 +588,16 @@ export class TestExecutionService extends AzureDevOpsService {
       const testApi = await this.getTestApi();
       const now = new Date();
       const paused = params.outcome === "Paused";
+      const existing = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
       const updated = await testApi.updateTestResults(
         [
-          {
+          await this.buildResultUpdate(existing, {
             id: params.resultId,
             outcome: params.outcome,
             state: paused ? "Paused" : "Completed",
             comment: params.comment,
             completedDate: paused ? undefined : now,
-          },
+          }),
         ],
         this.config.project,
         params.runId
@@ -702,12 +704,13 @@ export class TestExecutionService extends AzureDevOpsService {
   public async addTestResultComment(params: AddTestResultCommentParams) {
     try {
       const testApi = await this.getTestApi();
-      let comment = params.comment;
-      if (!params.replace) {
-        const existing = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
-        comment = existing.comment ? `${existing.comment}\n${params.comment}` : params.comment;
-      }
-      const updated = await testApi.updateTestResults([{ id: params.resultId, comment }], this.config.project, params.runId);
+      const existing = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
+      const comment = !params.replace && existing.comment ? `${existing.comment}\n${params.comment}` : params.comment;
+      const updated = await testApi.updateTestResults(
+        [await this.buildResultUpdate(existing, { id: params.resultId, comment })],
+        this.config.project,
+        params.runId
+      );
       return { runId: params.runId, resultId: params.resultId, comment: updated?.[0]?.comment ?? comment };
     } catch (error) {
       console.error(`Error commenting on result ${params.runId}/${params.resultId}:`, error);
@@ -752,6 +755,33 @@ export class TestExecutionService extends AzureDevOpsService {
     return match.id;
   }
 
+  /**
+   * Build an update for a result that keeps its failure type and resolution. Azure DevOps resets
+   * both to their defaults (None / unset) on any update that doesn't send them - even one that
+   * only adds a comment or marks a step - so every update re-sends what the result already has.
+   * Fields in `patch` that are undefined are ignored; the rest override.
+   */
+  protected async buildResultUpdate(existing: TestCaseResult, patch: TestCaseResult): Promise<TestCaseResult> {
+    const update: TestCaseResult = {};
+    if (existing.failureType && existing.failureType !== "None") {
+      update.failureType = existing.failureType;
+    }
+    let resolutionStateId = existing.resolutionStateId;
+    if (!resolutionStateId && existing.resolutionState) {
+      const states = await this.listTestResolutionStates();
+      resolutionStateId = states.find((st) => st.name.toLowerCase() === existing.resolutionState!.toLowerCase())?.id;
+    }
+    if (resolutionStateId) {
+      update.resolutionStateId = resolutionStateId;
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      if (value !== undefined) {
+        (update as Record<string, unknown>)[key] = value;
+      }
+    }
+    return update;
+  }
+
   public async updateTestResultAnalysis(params: UpdateTestResultAnalysisParams) {
     try {
       if (
@@ -762,8 +792,9 @@ export class TestExecutionService extends AzureDevOpsService {
       }
       const testApi = await this.getTestApi();
       const resolutionStateId = await this.resolveResolutionStateId(params.resolutionState, params.resolutionStateId);
+      const current = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
       await testApi.updateTestResults(
-        [{ id: params.resultId, failureType: params.failureType, resolutionStateId, comment: params.comment }],
+        [await this.buildResultUpdate(current, { id: params.resultId, failureType: params.failureType, resolutionStateId, comment: params.comment })],
         this.config.project,
         params.runId
       );
@@ -937,7 +968,7 @@ export class TestExecutionService extends AzureDevOpsService {
         const existing = await testApi.getTestResultById(this.config.project, params.runId, resultId, ResultDetails.WorkItems);
         const ids = new Set((existing.associatedBugs || []).map((b) => String(b.id)));
         params.workItemIds.forEach((id) => ids.add(String(id)));
-        updates.push({ id: resultId, associatedBugs: [...ids].map((id) => ({ id })) });
+        updates.push(await this.buildResultUpdate(existing, { id: resultId, associatedBugs: [...ids].map((id) => ({ id })) }));
       }
       await testApi.updateTestResults(updates, this.config.project, params.runId);
 

@@ -2492,7 +2492,7 @@ async function main() {
         failureType: z.enum(["None", "Regression", "New Issue", "Known Issue", "Unknown"]).optional(),
         resolutionState: z.string().optional().describe("Resolution name as listed by listTestResolutionStates (case-insensitive); they differ per project"),
         resolutionStateId: z.number().optional().describe("Resolution state id; takes precedence over resolutionState"),
-        comment: z.string().optional().describe("Analysis comment")
+        comment: z.string().optional().describe("Analysis comment; this is the result's comment field, so it replaces the existing result comment")
       },
       async (params, extra) => {
         const result = await testExecutionTools.updateTestResultAnalysis(params);

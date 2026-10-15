@@ -75,7 +75,7 @@ describe('TestExecutionService', () => {
       createTestRun: jest.fn().mockResolvedValue({ id: 77, name: 'run', state: 'InProgress', webAccessUrl: 'https://run/77' }),
       updateTestRun: jest.fn().mockResolvedValue({ id: 77, state: 'Completed' }),
       getTestResults: jest.fn().mockResolvedValue([{ id: 100000, testCase: { id: '5' }, outcome: 'None', state: 'Pending' }]),
-      getTestResultById: jest.fn(),
+      getTestResultById: jest.fn().mockResolvedValue({ id: 100000 }),
       getTestRunById: jest.fn().mockResolvedValue({ id: 77, name: 'run', webAccessUrl: 'https://run/77' }),
       updateTestResults: jest.fn().mockResolvedValue([{ id: 100000, outcome: 'Passed', state: 'Completed' }]),
       getTestResultAttachments: jest.fn().mockResolvedValue([]),
@@ -400,9 +400,65 @@ describe('TestExecutionService', () => {
     });
 
     it('replaces the comment when asked', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000, comment: 'old' });
       await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'only', replace: true });
-      expect(testApi.getTestResultById).not.toHaveBeenCalled();
       expect(testApi.updateTestResults.mock.calls[0][0][0].comment).toBe('only');
+    });
+
+    // Azure DevOps resets failureType/resolution on any update that doesn't send them.
+    describe('keeping the failure analysis across updates', () => {
+      const analysed = { id: 100000, comment: 'c', failureType: 'Regression', resolutionStateId: 10, resolutionState: 'Test issue' };
+      const sent = () => testApi.updateTestResults.mock.calls[0][0][0];
+
+      it('re-sends it when a comment is added', async () => {
+        testApi.getTestResultById.mockResolvedValue(analysed);
+        await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'more' });
+        expect(sent()).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionStateId: 10, comment: 'c\nmore' }));
+      });
+
+      it('re-sends it when the outcome is set', async () => {
+        testApi.getTestResultById.mockResolvedValue(analysed);
+        await service.setTestResultOutcome({ runId: 77, resultId: 100000, outcome: 'Failed' });
+        expect(sent()).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionStateId: 10, outcome: 'Failed' }));
+      });
+
+      it('re-sends it when steps are marked', async () => {
+        testApi.getTestResultById.mockResolvedValue({ ...resultWithIteration(), failureType: 'Regression', resolutionStateId: 10 });
+        await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 2, outcome: 'Passed' }] });
+        expect(sent()).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionStateId: 10 }));
+      });
+
+      it('re-sends it when work items are linked', async () => {
+        testApi.getTestResultById.mockResolvedValue(analysed);
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12], addRunHyperlink: false });
+        expect(sent()).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionStateId: 10 }));
+      });
+
+      it('keeps the resolution when only the failure type is changed, and vice versa', async () => {
+        testApi.getTestResultById.mockResolvedValue(analysed);
+        await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Known Issue' });
+        expect(sent()).toEqual(expect.objectContaining({ failureType: 'Known Issue', resolutionStateId: 10 }));
+        testApi.updateTestResults.mockClear();
+        await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionStateId: 11 });
+        expect(sent()).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionStateId: 11 }));
+      });
+
+      it('finds the resolution id by name when the result only reports the name', async () => {
+        (service as any).connection.rest = {
+          get: jest.fn().mockResolvedValue({ statusCode: 200, result: { value: [{ id: 10, name: 'Test issue' }] } })
+        };
+        testApi.getTestResultById.mockResolvedValue({ id: 100000, comment: 'c', failureType: 'None', resolutionState: 'Test Issue' });
+        await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'more' });
+        expect(sent().resolutionStateId).toBe(10);
+        expect(sent().failureType).toBeUndefined();
+      });
+
+      it('sends nothing extra for a result with no analysis', async () => {
+        testApi.getTestResultById.mockResolvedValue({ id: 100000, failureType: 'None' });
+        await service.setTestResultOutcome({ runId: 77, resultId: 100000, outcome: 'Passed' });
+        expect(sent().failureType).toBeUndefined();
+        expect(sent().resolutionStateId).toBeUndefined();
+      });
     });
 
     describe('resolution states', () => {
