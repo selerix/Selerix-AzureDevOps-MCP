@@ -1677,6 +1677,39 @@ describe('TestExecutionService', () => {
         );
       });
 
+      describe('the api-version used on an on-premises server', () => {
+        const urlFor = async (apiVersion: string | undefined) => {
+          const onPremises = new TestExecutionService({
+            ...testConfig, isOnPremises: true, collection: 'DefaultCollection', apiVersion, auth: { type: 'pat' }
+          });
+          const get = jest.fn().mockResolvedValue({ statusCode: 200, result: { value: [] } });
+          (onPremises as any).connection.rest = { get };
+          await onPremises.listTestResolutionStates();
+          return get.mock.calls[0][0] as string;
+        };
+
+        it.each([
+          ['a plain version, which the route would answer with HTTP 400', '7.0', '7.0-preview.1'],
+          ['a plain older version', '5.1', '5.1-preview.1'],
+          ['a version that is already a preview', '6.0-preview.2', '6.0-preview.2'],
+          ['a version with surrounding spaces', ' 7.0 ', '7.0-preview.1'],
+          ['no version configured', undefined, '5.0-preview.1'],
+          ['an empty version', '  ', '5.0-preview.1']
+        ])('uses a preview version for %s', async (_label, configured, expected) => {
+          expect(await urlFor(configured)).toBe(
+            `https://dev.azure.com/selerix/DefaultCollection/Engineering/_apis/TCMServiceMigration/testresolutionstate?api-version=${expected}`
+          );
+        });
+
+        it('keeps the verified version for Azure DevOps Services whatever apiVersion is configured', async () => {
+          const cloud = new TestExecutionService({ ...testConfig, apiVersion: '7.0' });
+          const get = jest.fn().mockResolvedValue({ statusCode: 200, result: { value: [] } });
+          (cloud as any).connection.rest = { get };
+          await cloud.listTestResolutionStates();
+          expect(get.mock.calls[0][0]).toContain('api-version=7.1-preview.1');
+        });
+      });
+
       it('stores the resolution by looked-up id (name match is case-insensitive) and reads the analysis back', async () => {
         testApi.getTestResultById.mockResolvedValue({ id: 100000, failureType: 'Regression', resolutionState: 'Product issue' });
         const out = await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Regression', resolutionState: 'PRODUCT ISSUE' });

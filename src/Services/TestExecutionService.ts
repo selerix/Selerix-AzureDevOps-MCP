@@ -104,6 +104,23 @@ const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
 
+/**
+ * The api-version for the resolution-state route. It is a preview-only route, so a plain version
+ * such as the "7.0" an on-premises server is usually configured with is answered with HTTP 400:
+ * the preview suffix is added when it is missing, and 5.0-preview.1 is used when none is
+ * configured. Azure DevOps Services uses the version this was verified against.
+ */
+function resolutionStatesApiVersion(isOnPremises: boolean | undefined, configured: string | undefined): string {
+  if (!isOnPremises) {
+    return "7.1-preview.1";
+  }
+  const version = configured?.trim();
+  if (!version) {
+    return "5.0-preview.1";
+  }
+  return version.includes("-preview") ? version : `${version}-preview.1`;
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -1370,7 +1387,7 @@ export class TestExecutionService extends AzureDevOpsService {
 
   public async listTestResolutionStates(_params: ListTestResolutionStatesParams = {}) {
     try {
-      const apiVersion = this.config.isOnPremises ? this.config.apiVersion || "5.0-preview.1" : "7.1-preview.1";
+      const apiVersion = resolutionStatesApiVersion(this.config.isOnPremises, this.config.apiVersion);
       const url = `${this.webBaseUrl()}/_apis/TCMServiceMigration/testresolutionstate?api-version=${apiVersion}`;
       const response = await this.connection.rest.get<{ value?: { id: number; name: string }[] }>(url);
       if (response.statusCode !== 200 || !response.result?.value) {
