@@ -102,7 +102,7 @@ describe('TestExecutionService', () => {
       updateReleaseEnvironment: jest.fn().mockResolvedValue({}),
     };
     buildApi = {
-      getBuild: jest.fn().mockResolvedValue({ id: 42, buildNumber: '20261015.1' }),
+      getBuild: jest.fn().mockResolvedValue({ id: 42, buildNumber: '20261015.1', definition: { id: 8 } }),
       getBuilds: jest.fn().mockResolvedValue([{ id: 43, buildNumber: '20261016.1' }]),
     };
     witApi = {
@@ -275,6 +275,24 @@ describe('TestExecutionService', () => {
         buildApi.getBuild.mockRejectedValue(new Error('build 42 not found'));
         await expect(service.startTestRun(automated)).rejects.toThrow('build 42 not found');
         expect(testApi.createTestRun).not.toHaveBeenCalled();
+      });
+
+      it('rejects an explicit build id that belongs to a different pipeline, before creating a run', async () => {
+        buildApi.getBuild.mockResolvedValue({ id: 42, buildNumber: '1.0', definition: { id: 99 } });
+        await expect(service.startTestRun(automated)).rejects.toThrow('Build 42 belongs to build pipeline 99, not 8');
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+        expect(releaseApi.createRelease).not.toHaveBeenCalled();
+      });
+
+      it('rejects a build whose pipeline cannot be confirmed', async () => {
+        buildApi.getBuild.mockResolvedValue({ id: 42, buildNumber: '1.0' });
+        await expect(service.startTestRun(automated)).rejects.toThrow('Could not confirm that build 42 belongs to build pipeline 8');
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+      });
+
+      it('accepts an explicit build id of the requested pipeline', async () => {
+        await service.startTestRun(automated);
+        expect(releaseApi.createRelease.mock.calls[0][0].artifacts[0].instanceReference).toEqual({ id: '42', name: '20261015.1' });
       });
 
       it('creates no run when the release pipeline has no build artifact', async () => {

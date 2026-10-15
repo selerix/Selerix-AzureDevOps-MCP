@@ -355,7 +355,18 @@ export class TestExecutionService extends AzureDevOpsService {
   protected async resolveBuild(pipelineId: number, buildId?: number, buildNumber?: string) {
     const buildApi = await this.getBuildApi();
     if (buildId !== undefined) {
-      return await buildApi.getBuild(this.config.project, buildId);
+      const build = await buildApi.getBuild(this.config.project, buildId);
+      // A build id is global, so it must be checked against the pipeline the release artifact is
+      // fed by; otherwise another pipeline's build would be bound to that artifact.
+      const buildPipelineId = build?.definition?.id;
+      if (buildPipelineId !== pipelineId) {
+        throw new Error(
+          buildPipelineId === undefined
+            ? `Could not confirm that build ${buildId} belongs to build pipeline ${pipelineId}`
+            : `Build ${buildId} belongs to build pipeline ${buildPipelineId}, not ${pipelineId}`
+        );
+      }
+      return build;
     }
     const builds = await buildApi.getBuilds(
       this.config.project, [pipelineId], undefined, buildNumber, undefined, undefined, undefined, undefined,
