@@ -258,13 +258,27 @@ export function parseTestSteps(stepsXml: string | undefined): ParsedTestStep[] {
     return [];
   }
   const steps: ParsedTestStep[] = [];
+  // Before looking for elements, XML comments and CDATA sections are taken out of the way in one
+  // left-to-right pass: a comment is dropped, so a commented-out step is not a step, and a CDATA
+  // section is set aside as text, so a "<step>" or "</step>" inside it is not structure. (One pass
+  // means a comment marker inside CDATA stays text, and CDATA inside a comment goes with it.) The
+  // CDATA is put back where the text of a step is read.
+  const cdata: string[] = [];
+  const masked = stepsXml.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, (section) => {
+    if (section.startsWith("<!--")) {
+      return "";
+    }
+    cdata.push(section);
+    return `\uE000${cdata.length - 1}\uE001`;
+  });
+  const unmask = (text: string) => text.replace(/\uE000(\d+)\uE001/g, (_, index) => cdata[Number(index)]);
   // Elements and their attributes are read independently of how they are serialised: attributes in
   // any order, single or double quotes, and self-closing or explicitly closed elements, since step
   // fields can be written through the API in any of those forms. (<steps> is not matched: \b needs
   // the name to end after "step".)
   const elementRegex = /<(step|compref)\b((?:[^>"']|"[^"]*"|'[^']*')*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g;
   let match: RegExpExecArray | null;
-  while ((match = elementRegex.exec(stepsXml)) !== null) {
+  while ((match = elementRegex.exec(masked)) !== null) {
     const attributes = readAttributes(match[2]);
     const id = parseInt(attributes.get("id") ?? "", 10);
     if (Number.isNaN(id)) {
@@ -288,7 +302,7 @@ export function parseTestSteps(stepsXml: string | undefined): ParsedTestStep[] {
     }
     // the action and the expected result are the first two parameterizedString elements, which may be empty
     const strings = [...(match[3] ?? "").matchAll(/<parameterizedString\b[^>]*?(?:\/>|>([\s\S]*?)<\/parameterizedString\s*>)/g)].map(
-      (m) => m[1] ?? ""
+      (m) => unmask(m[1] ?? "")
     );
     steps.push({
       id,

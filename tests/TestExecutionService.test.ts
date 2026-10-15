@@ -90,6 +90,50 @@ describe('parseTestSteps', () => {
       ]);
     });
 
+    describe('XML comments and CDATA around the steps', () => {
+      const step = (id: number, text: string) =>
+        `<step id="${id}" type="ActionStep"><parameterizedString isformatted="true">${text}</parameterizedString><parameterizedString isformatted="true"></parameterizedString></step>`;
+      const ids = (xml: string) => parseTestSteps(xml).map((s) => s.identifier);
+
+      it('ignores a commented-out step', () => {
+        const xml = `<steps>${'<!--'} ${step(99, 'old')} ${'-->'}${step(2, 'current')}</steps>`;
+        expect(parseTestSteps(xml).map((s) => [s.identifier, s.action])).toEqual([['2', 'current']]);
+      });
+
+      it('ignores a commented-out shared reference and several commented-out steps over many lines', () => {
+        const xml = `<steps>\n<!--\n  ${step(8, 'a')}\n  <compref id="9" ref="49" />\n  ${step(10, 'b')}\n-->\n${step(2, 'kept')}\n<compref id="3" ref="50"/>\n</steps>`;
+        expect(ids(xml)).toEqual(['2', '3']);
+      });
+
+      it('ignores comments inside a step and inside its text', () => {
+        const xml = `<steps><step id="1" type="ActionStep"><!-- note --><parameterizedString isformatted="true">Click<!-- hidden --> save</parameterizedString></step></steps>`;
+        expect(parseTestSteps(xml).map((s) => [s.identifier, s.action])).toEqual([['1', 'Click save']]);
+      });
+
+      it('does not read a step tag inside CDATA as a step, nor let its closing tag end the step early', () => {
+        const xml = `<steps>${step(1, '<![CDATA[Type <step id="9" type="ActionStep"> and </step> done]]>')}${step(2, 'next')}</steps>`;
+        const rows = parseTestSteps(xml);
+        expect(rows.map((s) => s.identifier)).toEqual(['1', '2']);
+        expect(rows[0].action).toContain('Type');
+        expect(rows[0].action).toContain('done');
+      });
+
+      it('treats a comment marker inside CDATA as text, so the step around it is still read', () => {
+        const xml = `<steps>${step(1, '<![CDATA[before <!-- not an XML comment --> after]]>')}${step(2, 'next')}</steps>`;
+        expect(ids(xml)).toEqual(['1', '2']);
+      });
+
+      it('drops CDATA that sits inside a comment together with the comment', () => {
+        const xml = `<steps><!-- ${step(5, '<![CDATA[gone]]>')} -->${step(2, 'kept')}</steps>`;
+        expect(parseTestSteps(xml).map((s) => [s.identifier, s.action])).toEqual([['2', 'kept']]);
+      });
+
+      it('still reads the text of a step that has several CDATA sections', () => {
+        const xml = `<steps>${step(1, '<![CDATA[One]]> and <![CDATA[two]]>')}</steps>`;
+        expect(parseTestSteps(xml)[0].action).toBe('One and two');
+      });
+    });
+
     it('reads an empty self-closing step rather than dropping it', () => {
       expect(summary('<steps><step id="4" type="ActionStep" /></steps>')).toEqual([['4', 'ActionStep', '', '', undefined]]);
     });
@@ -968,6 +1012,32 @@ describe('TestExecutionService', () => {
       expect(witApi.getRevision).toHaveBeenCalledWith(49, 2, undefined, 'Engineering');
       expect(out.steps![1].action).toBe('Shared steps: Login (old)');
       expect(out.steps!.find((s) => s.stepId === '2;2')!.action).toBe('Sign in');
+    });
+  });
+
+  describe('a test case whose steps field contains a commented-out step', () => {
+    const WITH_COMMENT =
+      '<steps id="0" last="99"><!-- <step id="99" type="ActionStep"><parameterizedString>old</parameterizedString></step> -->' +
+      '<step id="2" type="ActionStep"><parameterizedString>Open</parameterizedString></step>' +
+      '<step id="3" type="ActionStep"><parameterizedString>Save</parameterizedString></step></steps>';
+    beforeEach(() => {
+      witApi.getWorkItem.mockResolvedValue({ id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': WITH_COMMENT, 'System.Title': 'Save works' } });
+      testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+    });
+
+    it('does not submit an outcome for the obsolete step when all steps are marked', async () => {
+      const out = await service.setTestStepResults({ runId: 77, resultId: 100000, allStepsOutcome: 'Passed' });
+      const paths = testApi.updateTestResults.mock.calls[0][0][0].iterationDetails[0].actionResults.map((a: any) => a.actionPath).sort();
+      expect(paths).toEqual(['00000002', '00000003']); // not 00000063, step 99
+      expect(out.stepsUpdated).toBe(2);
+    });
+
+    it('does not list the obsolete step when reading the result, or in a bug', async () => {
+      const read = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(read.steps!.map((s) => s.stepId)).toEqual([2, 3]);
+      await service.createBugFromTestRun({ runId: 77, resultId: 100000 });
+      const repro = witApi.createWorkItem.mock.calls[0][1].find((p: any) => p.path === '/fields/Microsoft.VSTS.TCM.ReproSteps').value as string;
+      expect(repro).not.toContain('old');
     });
   });
 
