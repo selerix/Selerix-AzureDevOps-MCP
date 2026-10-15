@@ -1171,6 +1171,48 @@ describe('TestExecutionService', () => {
       expect(out.hyperlinked).toEqual([]);
     });
 
+    describe('only the same run on the same site counts as an existing link', () => {
+      const RUN77 = 'https://dev.azure.com/selerix/Engineering/_TestManagement/Runs?runId=77&_a=runCharts';
+      const addsHyperlinkGiven = async (existingUrl: string) => {
+        testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+        testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'run', webAccessUrl: RUN77 });
+        witApi.getWorkItem.mockResolvedValue({ relations: [{ rel: 'Hyperlink', url: existingUrl }] });
+        const out = await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+        return out.hyperlinked.length === 1;
+      };
+
+      it.each([
+        ['another organization', 'https://dev.azure.com/otherorg/Engineering/_testManagement/runs?runId=77'],
+        ['another project', 'https://dev.azure.com/selerix/OtherProject/_testManagement/runs?runId=77'],
+        ['another host', 'https://selerix.visualstudio.com/Engineering/_testManagement/runs?runId=77'],
+        ['an unrelated site', 'https://example.com/anything?runId=77'],
+        ['another page of the same site', 'https://dev.azure.com/selerix/Engineering/_build/results?runId=77']
+      ])('adds the hyperlink when the existing one is on %s', async (_label, existing) => {
+        expect(await addsHyperlinkGiven(existing)).toBe(true);
+      });
+
+      it.each([
+        ['another view of the run', 'https://dev.azure.com/selerix/Engineering/_testManagement/runs?runId=77&_a=resultSummary&resultId=1'],
+        ['a different letter case and a trailing slash', 'https://DEV.azure.com/selerix/Engineering/_testmanagement/runs/?RUNID=77'],
+        ['the same address', RUN77]
+      ])('skips the hyperlink when the existing one is %s', async (_label, existing) => {
+        expect(await addsHyperlinkGiven(existing)).toBe(false);
+      });
+
+      it('updateBugWithTestRun adds the current run\'s link when the bug has only another organization\'s run 77', async () => {
+        testApi.getTestResultById.mockResolvedValue({ ...resultWithIteration(), id: 100000 });
+        testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'run', webAccessUrl: RUN77 });
+        witApi.getWorkItem.mockImplementation(async (id: number) =>
+          id === 700
+            ? { id: 700, fields: {}, relations: [{ rel: 'Hyperlink', url: 'https://dev.azure.com/otherorg/Engineering/_testManagement/runs?runId=77&_a=resultSummary&resultId=100000' }] }
+            : { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': STEPS_XML, 'System.Title': 'Save works' } });
+        await service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 });
+        const patch = witApi.updateWorkItem.mock.calls[0][1];
+        const links = patch.filter((p: any) => p.path === '/relations/-' && p.value.rel === 'Hyperlink').map((p: any) => p.value.url);
+        expect(links).toEqual([expect.stringContaining('https://dev.azure.com/selerix/Engineering/_testManagement/runs?runId=77')]);
+      });
+    });
+
     it('still adds a hyperlink for a different run', async () => {
       testApi.getTestResultById.mockResolvedValue({ id: 100000 });
       witApi.getWorkItem.mockResolvedValue({

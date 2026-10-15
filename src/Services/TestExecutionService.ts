@@ -126,7 +126,12 @@ function enumName(enumObject: object, value: number | undefined): string | undef
   return name ?? String(value);
 }
 
-/** True when two hyperlinks are the same, or point at the same test run (any view of it). */
+/**
+ * True when two hyperlinks are the same, or are two views of the same test run: same site, same
+ * page (ignoring case and a trailing slash), same complete run id. Other query parameters, such as
+ * the view (_a=runCharts / resultSummary), are ignored. The run id alone is not enough - run 77
+ * of another organization or project, or of an unrelated site, is a different run.
+ */
 function sameRunLink(a: string | undefined, b: string): boolean {
   if (!a) {
     return false;
@@ -134,9 +139,21 @@ function sameRunLink(a: string | undefined, b: string): boolean {
   if (a === b) {
     return true;
   }
-  const runOf = (url: string) => /[?&]runId=(\d+)/i.exec(url)?.[1];
-  const runA = runOf(a);
-  return runA !== undefined && runA === runOf(b);
+  try {
+    const first = new URL(a);
+    const second = new URL(b);
+    const runOf = (url: URL) => [...url.searchParams].find(([key]) => key.toLowerCase() === "runid")?.[1];
+    const runId = runOf(first);
+    const page = (url: URL) => url.pathname.replace(/\/+$/, "").toLowerCase();
+    return (
+      runId !== undefined &&
+      runId === runOf(second) &&
+      first.origin.toLowerCase() === second.origin.toLowerCase() &&
+      page(first) === page(second)
+    );
+  } catch {
+    return false; // not both absolute URLs, so only an exact match counts
+  }
 }
 
 /** Run `fn` over `items` with at most `limit` in flight at once, keeping the order of the results. */
