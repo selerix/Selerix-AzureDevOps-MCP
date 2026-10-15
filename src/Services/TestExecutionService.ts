@@ -216,12 +216,23 @@ export function parseTestSteps(stepsXml: string | undefined): ParsedTestStep[] {
     return [];
   }
   const steps: ParsedTestStep[] = [];
-  const rowRegex =
-    /<step\s+id="(\d+)"\s+type="(ActionStep|ValidateStep)"[^>]*>([\s\S]*?)<\/step>|<compref\s+id="(\d+)"\s+ref="(\d+)"\s*\/>/g;
+  // Elements and their attributes are read independently of how they are serialised: attributes in
+  // any order, single or double quotes, and self-closing or explicitly closed elements, since step
+  // fields can be written through the API in any of those forms. (<steps> is not matched: \b needs
+  // the name to end after "step".)
+  const elementRegex = /<(step|compref)\b((?:[^>"']|"[^"]*"|'[^']*')*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g;
   let match: RegExpExecArray | null;
-  while ((match = rowRegex.exec(stepsXml)) !== null) {
-    if (match[4] !== undefined) {
-      const id = parseInt(match[4], 10);
+  while ((match = elementRegex.exec(stepsXml)) !== null) {
+    const attributes = readAttributes(match[2]);
+    const id = parseInt(attributes.get("id") ?? "", 10);
+    if (Number.isNaN(id)) {
+      continue; // an element without a usable id cannot be addressed
+    }
+    if (match[1] === "compref") {
+      const sharedStepId = parseInt(attributes.get("ref") ?? "", 10);
+      if (Number.isNaN(sharedStepId)) {
+        continue;
+      }
       steps.push({
         id,
         identifier: String(id),
@@ -229,22 +240,33 @@ export function parseTestSteps(stepsXml: string | undefined): ParsedTestStep[] {
         type: "SharedStepReference",
         action: "",
         expectedResult: "",
-        sharedStepId: parseInt(match[5], 10),
+        sharedStepId,
       });
       continue;
     }
-    const strings = [...match[3].matchAll(/<parameterizedString[^>]*>([\s\S]*?)<\/parameterizedString>/g)].map((m) => m[1]);
-    const id = parseInt(match[1], 10);
+    // the action and the expected result are the first two parameterizedString elements, which may be empty
+    const strings = [...(match[3] ?? "").matchAll(/<parameterizedString\b[^>]*?(?:\/>|>([\s\S]*?)<\/parameterizedString\s*>)/g)].map(
+      (m) => m[1] ?? ""
+    );
     steps.push({
       id,
       identifier: String(id),
       actionPath: toActionPath(id),
-      type: match[2] as ParsedTestStep["type"],
+      type: attributes.get("type") === "ValidateStep" ? "ValidateStep" : "ActionStep",
       action: htmlToText(strings[0] ?? ""),
       expectedResult: htmlToText(strings[1] ?? ""),
     });
   }
   return steps;
+}
+
+/** Read an element's attributes, in any order and quoting, with names lower-cased. */
+function readAttributes(text: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  for (const m of text.matchAll(/([^\s=\/]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    attributes.set(m[1].toLowerCase(), m[2] ?? m[3] ?? "");
+  }
+  return attributes;
 }
 
 export class TestExecutionService extends AzureDevOpsService {

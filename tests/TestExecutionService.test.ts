@@ -43,6 +43,68 @@ describe('parseTestSteps', () => {
     ]);
   });
 
+  describe('equivalent serialisations of the same steps', () => {
+    const summary = (xml: string) => parseTestSteps(xml).map((s) => [s.identifier, s.type, s.action, s.expectedResult, s.sharedStepId]);
+    const canonical =
+      '<steps id="0" last="3"><step id="1" type="ValidateStep"><parameterizedString isformatted="true">Open</parameterizedString>' +
+      '<parameterizedString isformatted="true">Opens</parameterizedString><description/></step><compref id="2" ref="49" />' +
+      '<step id="3" type="ActionStep"><parameterizedString isformatted="true">Save</parameterizedString>' +
+      '<parameterizedString isformatted="true"></parameterizedString><description/></step></steps>';
+    const expected = [
+      ['1', 'ValidateStep', 'Open', 'Opens', undefined],
+      ['2', 'SharedStepReference', '', '', 49],
+      ['3', 'ActionStep', 'Save', '', undefined]
+    ];
+
+    it('reads the canonical form', () => {
+      expect(summary(canonical)).toEqual(expected);
+    });
+
+    it('reads attributes in a different order', () => {
+      const xml = canonical
+        .replace('<step id="1" type="ValidateStep">', '<step type="ValidateStep" id="1">')
+        .replace('<compref id="2" ref="49" />', '<compref ref="49" id="2" />')
+        .replace('<step id="3" type="ActionStep">', '<step type="ActionStep" id="3">');
+      expect(summary(xml)).toEqual(expected);
+    });
+
+    it('reads a shared reference with an explicit closing tag', () => {
+      expect(summary(canonical.replace('<compref id="2" ref="49" />', '<compref id="2" ref="49"></compref>'))).toEqual(expected);
+      expect(summary(canonical.replace('<compref id="2" ref="49" />', '<compref ref="49" id="2" >\n</compref>'))).toEqual(expected);
+    });
+
+    it('reads single-quoted attributes, extra attributes and whitespace or newlines between them', () => {
+      const xml = canonical
+        .replace('<step id="1" type="ValidateStep">', "<step\n   id='1'\n   type='ValidateStep'\n   extra=\"x\" >")
+        .replace('<compref id="2" ref="49" />', "<compref   id='2'   ref='49'   />");
+      expect(summary(xml)).toEqual(expected);
+    });
+
+    it('reads empty and self-closing parameterizedString elements', () => {
+      const xml =
+        '<steps><step id="1" type="ActionStep"><parameterizedString /><parameterizedString isformatted="true"/></step>' +
+        '<step id="2" type="ActionStep"><parameterizedString></parameterizedString><parameterizedString>Then</parameterizedString></step></steps>';
+      expect(summary(xml)).toEqual([
+        ['1', 'ActionStep', '', '', undefined],
+        ['2', 'ActionStep', '', 'Then', undefined]
+      ]);
+    });
+
+    it('reads an empty self-closing step rather than dropping it', () => {
+      expect(summary('<steps><step id="4" type="ActionStep" /></steps>')).toEqual([['4', 'ActionStep', '', '', undefined]]);
+    });
+
+    it('keeps the action path and ignores the <steps> wrapper itself', () => {
+      const rows = parseTestSteps('<steps id="0" last="26"><step id="26" type="ActionStep"><parameterizedString>x</parameterizedString></step></steps>');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].actionPath).toBe('0000001a');
+    });
+
+    it('skips an element with no usable id instead of failing', () => {
+      expect(summary('<steps><step type="ActionStep"><parameterizedString>x</parameterizedString></step><compref id="2" /></steps>')).toEqual([]);
+    });
+  });
+
   it('returns a shared step reference as its own row, in document order', () => {
     const steps = parseTestSteps(SHARED_STEPS_XML);
     expect(steps.map((s) => [s.identifier, s.type, s.sharedStepId])).toEqual([
