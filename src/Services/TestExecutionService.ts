@@ -1206,22 +1206,33 @@ export class TestExecutionService extends AzureDevOpsService {
 
   public async addTestResultAttachment(params: AddTestResultAttachmentParams) {
     try {
-      const request = this.buildAttachmentRequest(params, params.kind);
       const testApi = await this.getTestApi();
-      let reference;
+      // Where the attachment goes is settled before the file is read, so a target that cannot work
+      // fails without anything having been read or uploaded.
+      let target: { iterationId: number; actionPath: string } | undefined;
       if (params.stepId !== undefined) {
         const result = await this.getResultWithIterations(params.runId, params.resultId);
         const selected = this.selectIteration(result, params.iterationId, "write");
+        if (!selected.iteration) {
+          // A result straight after startTestRun has no iteration yet; asking for "iteration 1" fails
+          // with an unclear error, so say what to do instead.
+          throw new Error(
+            `Result ${params.resultId} has no recorded steps yet, so there is no iteration to attach step ${params.stepId} to. ` +
+              `Record a step outcome first with setTestStepResults, or attach to the result itself by leaving stepId out.`
+          );
+        }
         const step = (await this.getStepsForResult(result, selected.iteration)).find((s) => s.identifier === String(params.stepId));
         if (!step) {
           throw new Error(`Step ${params.stepId} not found on test case ${result.testCase?.id}`);
         }
-        reference = await testApi.createTestIterationResultAttachment(
-          request, this.config.project, params.runId, params.resultId, selected.id, step.actionPath
-        );
-      } else {
-        reference = await testApi.createTestResultAttachment(request, this.config.project, params.runId, params.resultId);
+        target = { iterationId: selected.id, actionPath: step.actionPath };
       }
+      const request = this.buildAttachmentRequest(params, params.kind);
+      const reference = target
+        ? await testApi.createTestIterationResultAttachment(
+            request, this.config.project, params.runId, params.resultId, target.iterationId, target.actionPath
+          )
+        : await testApi.createTestResultAttachment(request, this.config.project, params.runId, params.resultId);
       return { runId: params.runId, resultId: params.resultId, stepId: params.stepId, fileName: request.fileName, attachment: reference };
     } catch (error) {
       console.error(`Error adding attachment to result ${params.runId}/${params.resultId}:`, error);

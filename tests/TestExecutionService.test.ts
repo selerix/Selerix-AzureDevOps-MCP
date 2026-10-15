@@ -1164,6 +1164,40 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('attaching to a step of a result that has no iteration yet (straight after startTestRun)', () => {
+    beforeEach(() => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000, testCase: { id: '5' }, state: 'Pending' });
+    });
+
+    it('says what to do instead of asking for an iteration that does not exist', async () => {
+      await expect(
+        service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt', stepId: 2 })
+      ).rejects.toThrow(
+        'Result 100000 has no recorded steps yet, so there is no iteration to attach step 2 to. Record a step outcome first with setTestStepResults, or attach to the result itself by leaving stepId out.'
+      );
+      expect(testApi.createTestIterationResultAttachment).not.toHaveBeenCalled();
+    });
+
+    it('settles the target before reading the file, so a missing file is not what is reported', async () => {
+      await expect(
+        service.addTestResultAttachment({ runId: 77, resultId: 100000, filePath: '/no/such/file.png', stepId: 2 })
+      ).rejects.toThrow('no recorded steps yet');
+    });
+
+    it('still attaches to the result itself', async () => {
+      await service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt' });
+      expect(testApi.createTestResultAttachment).toHaveBeenCalledTimes(1);
+    });
+
+    it('attaches to the step once a step outcome has been recorded', async () => {
+      testApi.getTestResultById.mockResolvedValue({
+        id: 100000, testCase: { id: '5' }, iterationDetails: [{ id: 1, actionResults: [{ actionPath: '00000002', outcome: 'Passed' }] }]
+      });
+      await service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt', stepId: 2 });
+      expect(testApi.createTestIterationResultAttachment).toHaveBeenCalledWith(expect.anything(), 'Engineering', 77, 100000, 1, '00000002');
+    });
+  });
+
   describe('recorded step results that have no action path', () => {
     // written by another client: there is nothing to match them to a step
     const orphan = { iterationId: 1, outcome: 'Failed', errorMessage: 'from another client' };
