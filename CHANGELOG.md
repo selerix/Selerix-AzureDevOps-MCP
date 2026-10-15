@@ -7,6 +7,68 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-15
+
+### Added
+
+- **Test execution tools** - trigger and manage test runs for one or many test cases:
+  `startTestRun` (manual web runner, or automated via a release pipeline stage with a chosen build),
+  `completeTestRun`, `listReleaseDefinitions`, `getReleaseDefinitionDetails`, `getTestResult`,
+  `setTestStepResults` (mark selected or all steps Passed/Failed with a comment),
+  `setTestResultOutcome` (Passed, Failed, Paused, Blocked, NotApplicable), `addTestResultComment`,
+  `addTestResultAttachment` (screenshots, recordings, files; per result or per step),
+  `listTestRunAttachments`, `getTestRunAttachment` (to a file, or inline when small),
+  `deleteTestRunAttachment` (permanent),
+  `addTestRunAttachment`, `updateTestResultAnalysis`, `listTestResolutionStates`, `assignTester`, `resetTestToActive`,
+  `getTestRuns`, `getTestCaseExecutionHistory`, `getTestPoints` (current state of test points: outcome, tester,
+  last run, last reset to Active, optional per-point results), `linkTestRunToWorkItems`, `createBugFromTestRun`
+  and `updateBugWithTestRun`.
+
+### Security
+
+- **Test execution attachment tools only touch allowed folders.** `addTestResultAttachment`,
+  `addTestRunAttachment` and `getTestRunAttachment` read from and write to the working directory
+  and the system temp folder only. `AZURE_DEVOPS_FILE_ACCESS_DIRS` (separated like `PATH`)
+  replaces that list; `*` lifts the folder limit. Credential and key files (`.env*`, SSH/cloud
+  config folders, `*.pem`, `*.key`, `.npmrc`, ...) are always refused, and symbolic links are
+  resolved before the check. Downloads never replace an existing file unless `overwrite: true`,
+  and a download into a folder is saved as `<attachment id>-<safe name>`. Inline `base64Content`
+  is limited to 1 KB, like work item attachments; use `filePath` for anything larger. The older
+  `getWorkItemAttachment` and build log/artifact downloads are unchanged.
+
+### Known issues
+
+- **Release and test-results calls fail behind Zscaler TLS inspection.** `deleteTestRunAttachment`
+  (Test Results service, `vstmr.dev.azure.com`) and the release-based tools
+  (`listReleaseDefinitions`, `getReleaseDefinitionDetails`, automated `startTestRun`; Release
+  service, `vsrm.dev.azure.com`) fail with `unable to get local issuer certificate` on networks
+  where Zscaler re-signs those two hosts, because Node.js does not trust its root certificate.
+  The delete call is implemented as the web UI makes it but has not yet succeeded through the
+  tool; the release tools have not been run live. Needs a DevOps change (bypass inspection for
+  those hosts, or distribute the root via `NODE_EXTRA_CA_CERTS`); see
+  `docs/devops-request-ado-tls-inspection.md`. To retest live once that is done.
+
+### Changed
+
+- `getTestAutomationStatus` now reads the real run state and counts from Azure DevOps instead of
+  returning fixed numbers.
+- `runAutomatedTests` is marked deprecated in its description: it is still a placeholder that does
+  not start a run. Use `startTestRun`.
+
+## [1.6.1] - 2026-10-06
+
+### Changed
+
+- **Self-contained package** - `dist/index.js` is now a single esbuild bundle that includes every
+  runtime dependency, so the published tarball runs with plain `node` and no `npm install`. Before,
+  running it outside an installed tree failed with
+  `Cannot find module '@modelcontextprotocol/sdk/server/mcp.js'`. The tarball ships only the bundle
+  and `dist/THIRD_PARTY_LICENSES.txt` (license notices for every bundled package), and its
+  `package.json` no longer lists runtime `dependencies`. Tools, env vars, `.env` lookup,
+  and auth are unchanged.
+- **Node 20 required** - `engines.node` is now `>=20.0.0`, matching what the bundled
+  `@azure/identity` and `@azure/msal-node` already needed.
+
 ## [1.5.2] - 2026-10-05
 
 ### Added
@@ -190,7 +252,14 @@ project uses — rather than requiring a separate, hand-rolled REST call.
 - The base64 decoded-size estimate now accounts for `=` padding, so a payload sitting exactly at
   the 1 KB boundary isn't incorrectly rejected.
 
-[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.6.1...v1.7.1
+[1.6.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.5.2...v1.6.1
+[1.5.2]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.4.1...v1.5.1
+[1.4.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.3.1...v1.4.1
+[1.3.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/selerix/Selerix-AzureDevOps-MCP/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/selerix/Selerix-AzureDevOps-MCP/releases/tag/v1.1.0

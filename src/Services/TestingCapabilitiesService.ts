@@ -1,5 +1,6 @@
 import { AzureDevOpsConfig } from "../Interfaces/AzureDevOps";
 import { AzureDevOpsService } from "./AzureDevOpsService";
+import { TestOutcome } from "azure-devops-node-api/interfaces/TestInterfaces";
 import {
   RunAutomatedTestsParams,
   GetTestAutomationStatusParams,
@@ -17,6 +18,10 @@ import {
   GetExploratoryTestStatisticsParams
 } from "../Interfaces/TestingCapabilities";
 
+// Failed results read per request, and requests made at most, when counting them one page at a time.
+const FAILED_COUNT_PAGE_SIZE = 1000;
+const MAX_FAILED_COUNT_PAGES = 1000;
+
 export class TestingCapabilitiesService extends AzureDevOpsService {
   constructor(config: AzureDevOpsConfig) {
     super(config);
@@ -33,14 +38,70 @@ export class TestingCapabilitiesService extends AzureDevOpsService {
   }
 
   async getTestAutomationStatus(params: GetTestAutomationStatusParams) {
+    const testApi = await this.connection.getTestApi();
+    const run = await testApi.getTestRunById(this.config.project, params.testRunId, true);
+    const totalTests = run.totalTests ?? 0;
+    const incompleteTests = run.incompleteTests ?? 0;
+    const passedTests = run.passedTests ?? 0;
+
+    // Failed results are counted as such. They are not "completed minus passed minus not
+    // applicable": a completed result can also be Blocked, Inconclusive, Timeout and so on, and
+    // none of those is a failure.
+    let outcomes: Record<string, number> | undefined;
+    let failedTests: number;
+    let failedTestsIsLowerBound = false;
+    if (run.runStatistics?.length) {
+      outcomes = {};
+      for (const stat of run.runStatistics) {
+        outcomes[stat.outcome] = (outcomes[stat.outcome] ?? 0) + stat.count;
+      }
+      failedTests = Object.entries(outcomes)
+        .filter(([outcome]) => outcome.toLowerCase() === "failed")
+        .reduce((sum, [, count]) => sum + count, 0);
+    } else {
+      const counted = await this.countFailedResults(params.testRunId);
+      failedTests = counted.count;
+      failedTestsIsLowerBound = !counted.complete;
+    }
+
     return {
       testRunId: params.testRunId,
-      status: "in_progress",
-      completedTests: 10,
-      totalTests: 25,
-      passedTests: 8,
-      failedTests: 2,
+      status: run.state,
+      completedTests: totalTests - incompleteTests,
+      totalTests,
+      passedTests,
+      failedTests,
+      // set only when the count could not be completed, so failedTests is at least this many
+      failedTestsIsLowerBound: failedTestsIsLowerBound || undefined,
+      outcomes,
     };
+  }
+
+  /**
+   * Count a run's Failed results by reading them page by page (when the run carries no
+   * statistics), to the end. If that cannot be done - the page limit is reached, or the server
+   * keeps returning the same page - the count so far is returned marked incomplete, so it is
+   * never presented as the total.
+   */
+  private async countFailedResults(runId: number): Promise<{ count: number; complete: boolean }> {
+    const testApi = await this.connection.getTestApi();
+    let count = 0;
+    let previousFirstId: number | undefined;
+    for (let page = 0; page < MAX_FAILED_COUNT_PAGES; page++) {
+      const results = await testApi.getTestResults(
+        this.config.project, runId, undefined, page * FAILED_COUNT_PAGE_SIZE, FAILED_COUNT_PAGE_SIZE, [TestOutcome.Failed]
+      );
+      const firstId = results?.[0]?.id;
+      if (page > 0 && firstId !== undefined && firstId === previousFirstId) {
+        return { count, complete: false }; // the same page again: the server is ignoring skip
+      }
+      previousFirstId = firstId;
+      count += results?.length ?? 0;
+      if (!results || results.length < FAILED_COUNT_PAGE_SIZE) {
+        return { count, complete: true };
+      }
+    }
+    return { count, complete: false };
   }
 
   async configureTestAgents(params: ConfigureTestAgentsParams) {

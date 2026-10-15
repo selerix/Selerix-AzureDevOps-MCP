@@ -242,4 +242,73 @@ Here's a list of all the tools mentioned in the README.md file:
 - `getBuildArtifacts`
 - `associateAutomatedTestWithTestCase`
 
+### Test Execution Tools
+Run test cases, record results, and file bugs (`src/Services/TestExecutionService.ts`).
+
+- Run: `startTestRun`, `completeTestRun`, `listReleaseDefinitions`, `getReleaseDefinitionDetails`
+- Record: `getTestResult`, `setTestStepResults`, `setTestResultOutcome`, `addTestResultComment`,
+  `addTestResultAttachment`, `addTestRunAttachment`, `listTestRunAttachments`, `getTestRunAttachment`,
+  `deleteTestRunAttachment`, `updateTestResultAnalysis` (analysis owner, failure type, resolution, comment),
+  `listTestResolutionStates`
+- Plan points: `assignTester`, `resetTestToActive`
+- History and links: `getTestRuns`, `getTestCaseExecutionHistory`, `getTestPoints`, `linkTestRunToWorkItems`
+- Bugs: `createBugFromTestRun`, `updateBugWithTestRun`
+
+Notes:
+- File access: `addTestResultAttachment`, `addTestRunAttachment` (upload `filePath`) and
+  `getTestRunAttachment` (download `savePath`) are limited to the working directory and the system
+  temp folder, or to `AZURE_DEVOPS_FILE_ACCESS_DIRS` when set (`*` lifts the folder limit). Credential
+  and key files are always refused. Downloads refuse to replace an existing file unless `overwrite: true`;
+  into a folder the file is named `<id>-<safe name>`. Inline `base64Content` is limited to 1 KB. The
+  helpers are in `src/utils/fileAccess.ts`; new tools that touch local files should use them.
+- `startTestRun` with `testType: "manual"` / `runner: "webApplication"` creates an in-progress run.
+  With `testType: "automated"` / `runner: "releaseStage"` it creates a release from the chosen build
+  with every stage manual, then deploys only the chosen stage. The run id is passed to the release
+  in the variable `test.RunId` (override with `runIdVariableName`); the stage's test task must be
+  set up to run that test run.
+- Screenshots and recordings are uploaded from a local file path. The server cannot capture the
+  screen itself.
+- Step outcomes are stored per step under an 8-digit lowercase hex action path, as the web UI writes them.
+  A shared step set is expanded into a reference row (step id `2`) plus one row per step inside it
+  (step id `"2;1"`, `"2;2"`, ...). Marking the reference marks only that row; use `allStepsOutcome`
+  or the `"parent;child"` ids to mark the steps inside it.
+- A result is shown against the steps it was run against: the test case at the revision the result
+  recorded, and each shared step set at the revision recorded on its reference row. A test case
+  edited after a run therefore does not change how older results read. A result with no recorded
+  revision, or a revision that cannot be read, uses the latest steps.
+- A parameterised result has one iteration per data row, each with its own step outcomes. `getTestResult`
+  lists them (`iterations`) and reports which one its steps belong to (`iterationId`); without an
+  `iterationId` it shows the first failing row, else the first. Bug reports follow the same rule and
+  say which row they describe. Changing step outcomes or attaching to a step refuses to guess: with
+  several iterations it needs `iterationId`, and the other iterations are sent back unchanged.
+- Azure DevOps clears a result's failure type and resolution on any update that does not carry them, so
+  every update re-sends them. A resolution that the result reports by name only has to be looked up as
+  an id; if that lookup is not possible (the route is unavailable) the update still goes ahead and the
+  response carries `warnings` saying the resolution may have been cleared and how to set it again.
+- `linkTestRunToWorkItems` records only bugs (the types in the project's bug category) as a result's associated
+  bugs; any other work item type gets just the hyperlink to the run, and is reported under
+  `notAssociatedAsBugs`.
+- Edits to one result (comment, outcome, step marks, analysis, work item links) are queued per result
+  inside the server, so calls made at the same moment do not overwrite each other. This covers calls
+  to this server only; an edit made in the web UI or by another server at the same time can still
+  be overwritten.
+- `assignTester` takes the tester's identity GUID. An email or display name is looked up among the
+  members of the project's teams (Azure DevOps itself rejects anything but a GUID). An email matches the
+  account name only. A display name that more than one person has, or a search that could not cover
+  every team and member, is refused with a request for the email or GUID, never guessed.
+- **Corporate TLS inspection (Zscaler) blocks some of these tools.** `deleteTestRunAttachment` goes
+  through the Test Results service (`vstmr.dev.azure.com`), and `listReleaseDefinitions`,
+  `getReleaseDefinitionDetails` and automated `startTestRun` go through the Release service
+  (`vsrm.dev.azure.com`). Zscaler re-signs those two hosts with its own root certificate, which
+  Node.js does not trust, so the calls fail with `unable to get local issuer certificate`. The
+  other test-execution tools use `dev.azure.com`, which is not inspected, and are unaffected.
+  - Status: the delete call hits this error on the corporate network (confirmed live); it has not
+    yet succeeded through the tool, only through the Azure DevOps web UI. The release calls have
+    not been run live and are expected to fail the same way.
+  - Fix, outside this repo: DevOps either bypasses TLS inspection for those hosts or makes Node
+    trust the Zscaler root (`NODE_EXTRA_CA_CERTS`). The request is in
+    [docs/devops-request-ado-tls-inspection.md](docs/devops-request-ado-tls-inspection.md).
+  - Once that is done, retest `deleteTestRunAttachment` and the release tools live. No code
+    change is expected.
+
 If you need to add more tools, make sure to implement them in the appropriate tools class first, and then register them in the `index.ts` file following the pattern shown above. 
