@@ -1725,8 +1725,46 @@ describe('TestExecutionService', () => {
       });
     });
 
-    it('requires a tester identity', async () => {
-      await expect(service.assignTester({ planId: 1, testCaseIds: [5], tester: {} })).rejects.toThrow('tester needs');
+    describe('an identity with nothing to go on', () => {
+      const nothing = 'The person needs an id, uniqueName or displayName';
+      const updated = () => testApi.updateTestPoints.mock.calls.length + testApi.updateTestResults.mock.calls.length;
+
+      it.each([
+        ['an empty object', {}],
+        ['empty strings', { id: '', uniqueName: '', displayName: '' }],
+        ['blank strings', { id: '  ', uniqueName: ' ', displayName: '\t' }]
+      ])('is refused by assignTester for %s, with nothing changed', async (_label, tester) => {
+        await expect(service.assignTester({ planId: 1, testCaseIds: [5], tester })).rejects.toThrow(nothing);
+        expect(updated()).toBe(0);
+      });
+
+      it.each([
+        ['an empty object', {}],
+        ['empty strings', { uniqueName: '', displayName: '' }],
+        ['blank strings', { id: ' ', uniqueName: '  ' }]
+      ])('is refused for an analysis owner given as %s - a clear error, not a TypeError', async (_label, analysisOwner) => {
+        const failure = service.updateTestResultAnalysis({ runId: 77, resultId: 100000, analysisOwner });
+        await expect(failure).rejects.toThrow(nothing);
+        await expect(failure).rejects.not.toBeInstanceOf(TypeError);
+        expect(updated()).toBe(0);
+      });
+
+      it('uses the display name when the email is blank, and the email when the name is blank', async () => {
+        (service as any).connection.getCoreApi = jest.fn().mockResolvedValue({
+          getTeams: jest.fn().mockResolvedValue([{ id: 't1' }]),
+          getTeamMembersWithExtendedProperties: jest.fn().mockResolvedValue([
+            { identity: { id: 'guid-9', uniqueName: 'pat.tester@selerix.com', displayName: 'Pat Tester' } }
+          ])
+        });
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: '  ', displayName: 'Pat Tester' } });
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'pat.tester@selerix.com', displayName: '' } });
+        expect(testApi.updateTestPoints.mock.calls.map((c) => c[0].tester.id)).toEqual(['guid-9', 'guid-9']);
+      });
+
+      it('trims an id before using it', async () => {
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { id: '  guid-1  ' } });
+        expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-1');
+      });
     });
 
     it('resets points to active', async () => {

@@ -1465,15 +1465,24 @@ export class TestExecutionService extends AzureDevOpsService {
    * error), so find the GUID of a name or email among the project's team members.
    */
   private async resolveTester(tester: TesterIdentity): Promise<{ id: string; uniqueName?: string; displayName?: string }> {
-    if (tester.id) {
-      return { id: tester.id, uniqueName: tester.uniqueName, displayName: tester.displayName };
+    // Checked here, in the one resolver both assignTester and the analysis owner use, so an empty
+    // or blank identity (the schema accepts {}) gets the same clear error from both instead of a
+    // TypeError further down.
+    const id = tester.id?.trim();
+    const uniqueName = tester.uniqueName?.trim();
+    const displayName = tester.displayName?.trim();
+    if (!id && !uniqueName && !displayName) {
+      throw new Error("The person needs an id, uniqueName or displayName");
+    }
+    if (id) {
+      return { id, uniqueName, displayName };
     }
     // An email is matched against the account name only - never against somebody's display name.
     // Account names are unique, so the first match is the person. Display names are not, so every
     // match is collected (by identity GUID, a person can be in several teams) and more than one is
     // refused rather than guessed.
-    const byAccount = tester.uniqueName !== undefined;
-    const wanted = (byAccount ? tester.uniqueName! : tester.displayName!).trim();
+    const byAccount = !!uniqueName;
+    const wanted = (byAccount ? uniqueName : displayName)!;
     const needle = wanted.toLowerCase();
     const matches = new Map<string, { id: string; uniqueName?: string; displayName?: string }>();
     let incomplete = false;
@@ -1562,10 +1571,6 @@ export class TestExecutionService extends AzureDevOpsService {
 
   public async assignTester(params: AssignTesterParams) {
     try {
-      const { id, uniqueName, displayName } = params.tester;
-      if (!id && !uniqueName && !displayName) {
-        throw new Error("tester needs an id, uniqueName or displayName");
-      }
       return await this.updatePoints(params, { tester: await this.resolveTester(params.tester) });
     } catch (error) {
       console.error("Error assigning tester:", error);
