@@ -89,8 +89,14 @@ function htmlToText(value: string): string {
 }
 
 /** Name of a numeric enum value; the value itself when it is not a known member. */
-function enumName(enumObject: Record<number, string>, value: number | undefined): string | undefined {
-  return value === undefined ? undefined : enumObject[value] ?? String(value);
+function enumName(enumObject: object, value: number | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  // These enums give their top value a second name, MaxValue, which reverse lookup would pick.
+  const entries = Object.entries(enumObject as Record<string, string | number>);
+  const name = entries.find(([key, v]) => typeof v === "number" && v === value && key !== "MaxValue")?.[0];
+  return name ?? String(value);
 }
 
 const toActionPath = (id: number) => id.toString(16).padStart(8, "0");
