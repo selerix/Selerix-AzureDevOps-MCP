@@ -24,6 +24,18 @@ follows [Semantic Versioning](https://semver.org/).
   last run, last reset to Active, optional per-point results), `linkTestRunToWorkItems`, `createBugFromTestRun`
   and `updateBugWithTestRun`.
 
+### Security
+
+- **Test execution attachment tools only touch allowed folders.** `addTestResultAttachment`,
+  `addTestRunAttachment` and `getTestRunAttachment` read from and write to the working directory
+  and the system temp folder only. `AZURE_DEVOPS_FILE_ACCESS_DIRS` (separated like `PATH`)
+  replaces that list; `*` lifts the folder limit. Credential and key files (`.env*`, SSH/cloud
+  config folders, `*.pem`, `*.key`, `.npmrc`, ...) are always refused, and symbolic links are
+  resolved before the check. Downloads never replace an existing file unless `overwrite: true`,
+  and a download into a folder is saved as `<attachment id>-<safe name>`. Inline `base64Content`
+  is limited to 1 KB, like work item attachments; use `filePath` for anything larger. The older
+  `getWorkItemAttachment` and build log/artifact downloads are unchanged.
+
 ### Known issues
 
 - **Release and test-results calls fail behind Zscaler TLS inspection.** `deleteTestRunAttachment`

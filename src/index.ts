@@ -2434,8 +2434,8 @@ async function main() {
         iterationId: idSchema.optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
         runId: idSchema.describe("ID of the test run"),
         resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
-        filePath: z.string().optional().describe("Absolute path of the local file to upload"),
-        base64Content: z.string().optional().describe("Small file content as base64 (alternative to filePath; requires fileName)"),
+        filePath: z.string().optional().describe("Absolute path of the local file to upload; must be inside an allowed folder (the working directory, the temp folder, or AZURE_DEVOPS_FILE_ACCESS_DIRS) and not a credential or key file"),
+        base64Content: z.string().optional().describe("Base64 content for data with no file, rejected above 1 KB decoded; use filePath for anything larger (requires fileName)"),
         fileName: z.string().optional().describe("File name; defaults to the file's own name"),
         comment: z.string().optional().describe("Comment stored with the attachment"),
         kind: z.enum(["screenshot", "recording", "file"]).optional().describe("Validates the file type: screenshot = image, recording = video"),
@@ -2455,8 +2455,8 @@ async function main() {
       "Upload a file to a test run (as opposed to a single result)",
       {
         runId: idSchema.describe("ID of the test run"),
-        filePath: z.string().optional().describe("Absolute path of the local file to upload"),
-        base64Content: z.string().optional().describe("Small file content as base64 (alternative to filePath; requires fileName)"),
+        filePath: z.string().optional().describe("Absolute path of the local file to upload; must be inside an allowed folder (the working directory, the temp folder, or AZURE_DEVOPS_FILE_ACCESS_DIRS) and not a credential or key file"),
+        base64Content: z.string().optional().describe("Base64 content for data with no file, rejected above 1 KB decoded; use filePath for anything larger (requires fileName)"),
         fileName: z.string().optional().describe("File name; defaults to the file's own name"),
         comment: z.string().optional().describe("Comment stored with the attachment")
       },

@@ -255,6 +255,12 @@ Run test cases, record results, and file bugs (`src/Services/TestExecutionServic
 - Bugs: `createBugFromTestRun`, `updateBugWithTestRun`
 
 Notes:
+- File access: `addTestResultAttachment`, `addTestRunAttachment` (upload `filePath`) and
+  `getTestRunAttachment` (download `savePath`) are limited to the working directory and the system
+  temp folder, or to `AZURE_DEVOPS_FILE_ACCESS_DIRS` when set (`*` lifts the folder limit). Credential
+  and key files are always refused. Downloads refuse to replace an existing file unless `overwrite: true`;
+  into a folder the file is named `<id>-<safe name>`. Inline `base64Content` is limited to 1 KB. The
+  helpers are in `src/utils/fileAccess.ts`; new tools that touch local files should use them.
 - `startTestRun` with `testType: "manual"` / `runner: "webApplication"` creates an in-progress run.
   With `testType: "automated"` / `runner: "releaseStage"` it creates a release from the chosen build
   with every stage manual, then deploys only the chosen stage. The run id is passed to the release

@@ -1569,17 +1569,73 @@ describe('TestExecutionService', () => {
       expect(testApi.createTestIterationResultAttachment).toHaveBeenCalledWith(expect.anything(), 'Engineering', 77, 100000, 1, '00000003');
     });
 
-    it('applies the size limit to base64 content as well as files', async () => {
-      // ~110 MB once decoded; only its length matters, so it is never decoded
-      const tooBig = 'A'.repeat(140 * 1024 * 1024);
+    it('accepts inline base64 content only up to 1 KB', async () => {
+      const ok = Buffer.alloc(1024, 1).toString('base64');
+      await service.addTestRunAttachment({ runId: 77, base64Content: ok, fileName: 'small.bin' });
+      expect(testApi.createTestRunAttachment).toHaveBeenCalledTimes(1);
+
+      const tooBig = Buffer.alloc(1025, 1).toString('base64');
       await expect(
-        service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: tooBig, fileName: 'huge.bin' })
-      ).rejects.toThrow('the limit is 100 MB');
+        service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: tooBig, fileName: 'big.bin' })
+      ).rejects.toThrow(/limit is 1024 bytes.*filePath/);
       await expect(
-        service.addTestRunAttachment({ runId: 77, base64Content: tooBig, fileName: 'huge.bin' })
-      ).rejects.toThrow('the limit is 100 MB');
+        service.addTestRunAttachment({ runId: 77, base64Content: tooBig, fileName: 'big.bin' })
+      ).rejects.toThrow(/limit is 1024 bytes/);
       expect(testApi.createTestResultAttachment).not.toHaveBeenCalled();
-      expect(testApi.createTestRunAttachment).not.toHaveBeenCalled();
+      expect(testApi.createTestRunAttachment).toHaveBeenCalledTimes(1);
+    });
+
+    describe('which local files may be uploaded', () => {
+      let other: string;
+      beforeEach(() => {
+        other = fs.mkdtempSync(path.join(os.homedir(), 'upload-policy-'));
+      });
+      afterEach(() => {
+        fs.rmSync(other, { recursive: true, force: true });
+      });
+      const serviceAllowing = (dirs: string[]) => {
+        const configured = new TestExecutionService({ ...testConfig, fileAccessDirs: dirs });
+        (configured as any).getTestApi = jest.fn().mockResolvedValue(testApi);
+        return configured;
+      };
+
+      it('refuses a file outside the allowed folders without reading or sending it', async () => {
+        const file = path.join(other, 'notes.txt');
+        fs.writeFileSync(file, 'x');
+        await expect(service.addTestRunAttachment({ runId: 77, filePath: file })).rejects.toThrow(/outside the folders these tools may read/);
+        expect(testApi.createTestRunAttachment).not.toHaveBeenCalled();
+      });
+
+      it('refuses credential and key files even in an allowed folder', async () => {
+        for (const name of ['.env', 'id_rsa', 'server.pem', '.npmrc']) {
+          const file = path.join(tmpDir, name);
+          fs.writeFileSync(file, 'secret');
+          await expect(service.addTestRunAttachment({ runId: 77, filePath: file })).rejects.toThrow(/credential or key file/);
+        }
+        expect(testApi.createTestRunAttachment).not.toHaveBeenCalled();
+      });
+
+      it('uploads from a folder named in fileAccessDirs', async () => {
+        const file = path.join(other, 'notes.txt');
+        fs.writeFileSync(file, 'hello');
+        await serviceAllowing([other]).addTestRunAttachment({ runId: 77, filePath: file });
+        expect(testApi.createTestRunAttachment).toHaveBeenCalledWith(
+          expect.objectContaining({ fileName: 'notes.txt', stream: Buffer.from('hello').toString('base64') }), 'Engineering', 77
+        );
+      });
+
+      it('with "*" uploads from any folder but still refuses credential files', async () => {
+        const file = path.join(other, 'notes.txt');
+        fs.writeFileSync(file, 'hello');
+        const open = serviceAllowing(['*']);
+        await open.addTestRunAttachment({ runId: 77, filePath: file });
+        expect(testApi.createTestRunAttachment).toHaveBeenCalledTimes(1);
+
+        const key = path.join(other, 'id_ed25519');
+        fs.writeFileSync(key, 'secret');
+        await expect(open.addTestRunAttachment({ runId: 77, filePath: key })).rejects.toThrow(/credential or key file/);
+        expect(testApi.createTestRunAttachment).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('uploads a run attachment', async () => {
