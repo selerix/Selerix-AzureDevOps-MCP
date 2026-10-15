@@ -79,6 +79,8 @@ const RESULT_UPDATE_BATCH_SIZE = 50;
 // Teams, and members of a team, read per request when looking a person up (paged with top/skip).
 // Results asked of the history query for one test case before giving up on filling every point.
 const MAX_HISTORY_RESULTS = 1000;
+// Attempts at updating a bug that someone else keeps changing underneath the update.
+const MAX_BUG_UPDATE_ATTEMPTS = 3;
 const IDENTITY_PAGE_SIZE = 100;
 // Pages read at most, for teams and for each team's members, before concluding nobody matches.
 const MAX_IDENTITY_PAGES = 100;
@@ -182,6 +184,19 @@ function bugsOf(
   const info = runInfo.get(Number(r.testRun?.id));
   const merged = mergeBugIds(info?.bugs.get(r.id!), r.associatedBugs);
   return info || merged.length > 0 ? merged : undefined;
+}
+
+/**
+ * True when a work item update failed because the item changed since it was read: the update
+ * carries a test of the item's revision, and Azure DevOps rejects it when the revision moved on.
+ */
+function isRevisionConflict(error: unknown): boolean {
+  const e = error as { statusCode?: number; message?: string };
+  return (
+    e?.statusCode === 409 ||
+    e?.statusCode === 412 ||
+    /TF26071|changed by someone else|test operation|precondition|conflict/i.test(e?.message ?? "")
+  );
 }
 
 /** Union of bug ids from two sources, keeping order. */
@@ -1815,24 +1830,44 @@ export class TestExecutionService extends AzureDevOpsService {
     try {
       const witApi = await this.getWorkItemTrackingApi();
       const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails);
-      const bug = await witApi.getWorkItem(params.bugId, undefined, undefined, WorkItemExpand.All, this.config.project);
+      // The Repro Steps text is read, extended and written back, so two updates overlapping on one
+      // bug could overwrite each other's report. The update therefore carries a test of the revision
+      // it was built from: if the bug has changed since, Azure DevOps rejects it, and it is rebuilt
+      // from a fresh read instead of silently replacing the newer text.
+      for (let attempt = 1; ; attempt++) {
+        const bug = await witApi.getWorkItem(params.bugId, undefined, undefined, WorkItemExpand.All, this.config.project);
 
-      const patch: { op: Operation; path: string; value: unknown }[] = [
-        { op: Operation.Add, path: "/fields/System.History", value: report.html },
-      ];
-      if (params.appendToReproSteps) {
-        const current = (bug.fields?.["Microsoft.VSTS.TCM.ReproSteps"] as string) || "";
-        patch.push({ op: Operation.Add, path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: `${current}<hr/>${report.html}` });
-      }
-      const existing = bug.relations || [];
-      for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
-        const duplicate = existing.some((r) =>
-          r.rel === relation.rel && (relation.rel === "Hyperlink" ? sameRunLink(r.url, relation.url) : r.url === relation.url));
-        if (!duplicate) {
-          patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
+        const patch: { op: Operation; path: string; value: unknown }[] = [
+          { op: Operation.Test, path: "/rev", value: bug.rev },
+          { op: Operation.Add, path: "/fields/System.History", value: report.html },
+        ];
+        if (params.appendToReproSteps) {
+          const current = (bug.fields?.["Microsoft.VSTS.TCM.ReproSteps"] as string) || "";
+          patch.push({ op: Operation.Add, path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: `${current}<hr/>${report.html}` });
+        }
+        const existing = bug.relations || [];
+        for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
+          const duplicate = existing.some((r) =>
+            r.rel === relation.rel && (relation.rel === "Hyperlink" ? sameRunLink(r.url, relation.url) : r.url === relation.url));
+          if (!duplicate) {
+            patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
+          }
+        }
+
+        try {
+          await witApi.updateWorkItem(undefined, patch, params.bugId, this.config.project);
+          break;
+        } catch (error) {
+          if (!isRevisionConflict(error)) {
+            throw error;
+          }
+          if (attempt >= MAX_BUG_UPDATE_ATTEMPTS) {
+            throw new Error(
+              `Bug ${params.bugId} kept changing while it was being updated (${attempt} attempts), so nothing was added. Try again.`
+            );
+          }
         }
       }
-      await witApi.updateWorkItem(undefined, patch, params.bugId, this.config.project);
 
       try {
         await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false });

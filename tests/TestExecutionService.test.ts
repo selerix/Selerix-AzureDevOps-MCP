@@ -1294,6 +1294,72 @@ describe('TestExecutionService', () => {
       });
     });
 
+    describe('updating a bug that changes while it is being updated', () => {
+      const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      let bug: { rev: number; repro: string };
+
+      beforeEach(() => {
+        bug = { rev: 4, repro: '<p>original</p>' };
+        witApi.getWorkItem.mockImplementation(async (id: number) => {
+          if (id !== 700) {
+            return { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': STEPS_XML, 'System.Title': 'Save works' } };
+          }
+          await delay(5);
+          return { id: 700, rev: bug.rev, fields: { 'Microsoft.VSTS.TCM.ReproSteps': bug.repro }, relations: [] };
+        });
+        // like Azure DevOps: a patch whose revision test no longer holds is rejected
+        witApi.updateWorkItem.mockImplementation(async (_c: unknown, patch: any[], id: number) => {
+          await delay(5);
+          const test = patch.find((p) => p.op === 5 /* Test */ && p.path === '/rev');
+          if (test && test.value !== bug.rev) {
+            throw Object.assign(new Error('TF26071: This work item has been changed by someone else since you opened it.'), { statusCode: 409 });
+          }
+          const repro = patch.find((p) => p.path === '/fields/Microsoft.VSTS.TCM.ReproSteps');
+          if (repro) bug.repro = repro.value;
+          bug.rev += 1;
+          return { id };
+        });
+      });
+
+      it('sends the revision it read as a test, first in the patch', async () => {
+        await service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 });
+        const patch = witApi.updateWorkItem.mock.calls[0][1];
+        expect(patch[0]).toEqual({ op: 5, path: '/rev', value: 4 });
+      });
+
+      it('keeps both reports when two updates append to the same bug at once', async () => {
+        await Promise.all([
+          service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000, appendToReproSteps: true, additionalDetails: 'FIRST REPORT' }),
+          service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000, appendToReproSteps: true, additionalDetails: 'SECOND REPORT' })
+        ]);
+        expect(bug.repro).toContain('original');
+        expect(bug.repro).toContain('FIRST REPORT');
+        expect(bug.repro).toContain('SECOND REPORT');
+        expect(bug.rev).toBe(6); // two successful updates, the stale attempt having been rejected
+      });
+
+      it('gives up after three conflicts and says nothing was added', async () => {
+        witApi.updateWorkItem.mockRejectedValue(Object.assign(new Error('conflict'), { statusCode: 409 }));
+        await expect(service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 })).rejects.toThrow(
+          'Bug 700 kept changing while it was being updated (3 attempts), so nothing was added. Try again.'
+        );
+        expect(witApi.updateWorkItem).toHaveBeenCalledTimes(3);
+        expect(testApi.updateTestResults).not.toHaveBeenCalled();
+      });
+
+      it('recognises a conflict from the message alone', async () => {
+        witApi.updateWorkItem.mockRejectedValueOnce(new Error('TF26071: This work item has been changed by someone else since you opened it.'));
+        await service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 });
+        expect(witApi.updateWorkItem).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not retry an error that is not a conflict', async () => {
+        witApi.updateWorkItem.mockRejectedValue(Object.assign(new Error('forbidden'), { statusCode: 403 }));
+        await expect(service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 })).rejects.toThrow('forbidden');
+        expect(witApi.updateWorkItem).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('comments on an existing bug without duplicating links it already has', async () => {
       witApi.getWorkItem.mockImplementation(async (id: number) =>
         id === 700
