@@ -270,6 +270,10 @@ Notes:
   recorded, and each shared step set at the revision recorded on its reference row. A test case
   edited after a run therefore does not change how older results read. A result with no recorded
   revision, or a revision that cannot be read, uses the latest steps.
+- Edits to one result (comment, outcome, step marks, analysis, work item links) are queued per result
+  inside the server, so calls made at the same moment do not overwrite each other. This covers calls
+  to this server only; an edit made in the web UI or by another server at the same time can still
+  be overwritten.
 - `assignTester` takes the tester's identity GUID. An email or display name is looked up among the
   members of the project's teams (Azure DevOps itself rejects anything but a GUID).
 - **Corporate TLS inspection (Zscaler) blocks some of these tools.** `deleteTestRunAttachment` goes

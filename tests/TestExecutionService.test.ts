@@ -257,6 +257,109 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('overlapping edits of the same result', () => {
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let store: any;
+
+    beforeEach(() => {
+      // A tiny stand-in for the result on the server. Reads and writes take time, so two calls
+      // that are not serialised both read the same starting state. Like Azure DevOps, an update
+      // that does not carry failureType resets it.
+      store = { id: 100000, testCase: { id: '5' }, comment: 'start', failureType: 'None', iterationDetails: [{ id: 1, actionResults: [] }] };
+      testApi.getTestResultById.mockImplementation(async () => {
+        await delay(10);
+        return JSON.parse(JSON.stringify(store));
+      });
+      testApi.updateTestResults.mockImplementation(async (updates: any[]) => {
+        await delay(10);
+        for (const u of updates) {
+          if (u.comment !== undefined) store.comment = u.comment;
+          store.failureType = u.failureType ?? 'None';
+          if (u.iterationDetails) store.iterationDetails = u.iterationDetails;
+        }
+        return [JSON.parse(JSON.stringify(store))];
+      });
+    });
+
+    it('keeps both comments when two are added at once', async () => {
+      await Promise.all([
+        service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'first' }),
+        service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'second' })
+      ]);
+      expect(store.comment.split('\n').sort()).toEqual(['first', 'second', 'start']);
+    });
+
+    it('keeps both the new comment and the new failure analysis', async () => {
+      await Promise.all([
+        service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'more' }),
+        service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Regression' })
+      ]);
+      expect(store.comment).toContain('more');
+      expect(store.failureType).toBe('Regression');
+    });
+
+    it('keeps the outcomes of both step updates', async () => {
+      await Promise.all([
+        service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 2, outcome: 'Passed' }] }),
+        service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 3, outcome: 'Failed', comment: 'broke' }] })
+      ]);
+      const recorded = store.iterationDetails[0].actionResults.map((a: any) => [a.actionPath, a.outcome]).sort();
+      expect(recorded).toEqual([['00000002', 'Passed'], ['00000003', 'Failed']]);
+    });
+
+    it('runs the edits one after another, not side by side', async () => {
+      let inFlight = 0;
+      let peak = 0;
+      const read = testApi.getTestResultById.getMockImplementation()!;
+      testApi.getTestResultById.mockImplementation(async (...args: unknown[]) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        try { return await read(...args); } finally { inFlight--; }
+      });
+      await Promise.all(['a', 'b', 'c'].map((c) => service.addTestResultComment({ runId: 77, resultId: 100000, comment: c })));
+      expect(peak).toBe(1);
+    });
+
+    it('lets edits of different results run side by side', async () => {
+      let inFlight = 0;
+      let peak = 0;
+      const read = testApi.getTestResultById.getMockImplementation()!;
+      testApi.getTestResultById.mockImplementation(async (...args: unknown[]) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        try { return await read(...args); } finally { inFlight--; }
+      });
+      await Promise.all([
+        service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'a' }),
+        service.addTestResultComment({ runId: 77, resultId: 100001, comment: 'b' }),
+        service.addTestResultComment({ runId: 78, resultId: 100000, comment: 'c' })
+      ]);
+      expect(peak).toBe(3);
+    });
+
+    it('releases the lock when an edit fails, so the next one proceeds', async () => {
+      const write = testApi.updateTestResults.getMockImplementation()!;
+      testApi.updateTestResults.mockRejectedValueOnce(new Error('server error'));
+      const failing = service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'lost' });
+      const next = service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'kept' });
+      await expect(failing).rejects.toThrow('server error');
+      await next;
+      expect(store.comment).toBe('start\nkept');
+      expect(write).toBeDefined();
+      expect((service as any).resultLocks.size).toBe(0);
+    });
+
+    it('serialises linking a result with another edit of it', async () => {
+      await Promise.all([
+        service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'note' }),
+        service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Regression' }),
+        service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12], addRunHyperlink: false })
+      ]);
+      expect(store.comment).toContain('note');
+      expect(store.failureType).toBe('Regression');
+    });
+  });
+
   describe('runs with more results than one page', () => {
     // results come back 500 at a time (skip/top)
     const results = (from: number, count: number) =>
@@ -288,12 +391,14 @@ describe('TestExecutionService', () => {
       expect(batches.every((b) => b.length <= 50)).toBe(true);
       expect(batches).toHaveLength(11);
       expect(new Set(batches.flat().map((u) => u.id)).size).toBe(503);
-      // the work items already on each result come from the paged read, not one read per result
-      expect(testApi.getTestResultById).not.toHaveBeenCalled();
+      // each result is read again under its lock, with the work items it has right now
+      expect(testApi.getTestResultById).toHaveBeenCalledTimes(503);
     });
 
     it('keeps the bugs a result already has when linking a whole run', async () => {
-      testApi.getTestResults.mockResolvedValue([{ id: 1, associatedBugs: [{ id: '11' }] }, { id: 2 }]);
+      testApi.getTestResults.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+      testApi.getTestResultById.mockImplementation(async (_p: string, _r: number, id: number) =>
+        id === 1 ? { id: 1, associatedBugs: [{ id: '11' }] } : { id: 2 });
       await service.linkTestRunToWorkItems({ runId: 77, workItemIds: [12], addRunHyperlink: false });
       expect(testApi.updateTestResults.mock.calls[0][0]).toEqual([
         expect.objectContaining({ id: 1, associatedBugs: [{ id: '11' }, { id: '12' }] }),

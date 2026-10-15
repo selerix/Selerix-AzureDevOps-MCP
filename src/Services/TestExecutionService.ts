@@ -659,6 +659,41 @@ export class TestExecutionService extends AzureDevOpsService {
     throw new Error(`Test run ${runId} has more than ${MAX_RESULT_PAGES * RESULT_PAGE_SIZE} results; too many to read at once`);
   }
 
+  // Tail of the queue of operations on each result, keyed "runId/resultId".
+  private resultLocks = new Map<string, Promise<void>>();
+
+  /**
+   * Run `fn` while holding the lock of each given result, so the read-merge-write cycles of
+   * operations on the same result run one after another instead of overwriting each other (two
+   * comments appended from the same starting text, step outcomes resent from before another edit,
+   * analysis or owner values resent stale). Operations on different results do not wait for each
+   * other. Locks are taken in ascending order, so overlapping batches cannot deadlock. This
+   * serialises calls within this server process only; it cannot see edits made elsewhere.
+   */
+  protected async withResultLocks<T>(runId: number, resultIds: number[], fn: () => Promise<T>): Promise<T> {
+    const keys = [...new Set(resultIds)].sort((a, b) => a - b).map((id) => `${runId}/${id}`);
+    const releases: (() => void)[] = [];
+    try {
+      for (const key of keys) {
+        const previous = this.resultLocks.get(key) ?? Promise.resolve();
+        let release!: () => void;
+        const mine = new Promise<void>((resolve) => (release = resolve));
+        const tail = previous.then(() => mine);
+        this.resultLocks.set(key, tail);
+        releases.push(() => {
+          release();
+          if (this.resultLocks.get(key) === tail) {
+            this.resultLocks.delete(key);
+          }
+        });
+        await previous;
+      }
+      return await fn();
+    } finally {
+      releases.forEach((r) => r());
+    }
+  }
+
   protected async getResultWithIterations(runId: number, resultId: number) {
     const testApi = await this.getTestApi();
     return await testApi.getTestResultById(this.config.project, runId, resultId, ResultDetails.Iterations | ResultDetails.WorkItems);
@@ -720,6 +755,10 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   public async setTestStepResults(params: SetTestStepResultsParams) {
+    return await this.withResultLocks(params.runId, [params.resultId], () => this.setTestStepResultsExclusive(params));
+  }
+
+  private async setTestStepResultsExclusive(params: SetTestStepResultsParams) {
     try {
       if ((!params.steps || params.steps.length === 0) && !params.allStepsOutcome) {
         throw new Error("Provide steps and/or allStepsOutcome");
@@ -799,6 +838,10 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   public async setTestResultOutcome(params: SetTestResultOutcomeParams) {
+    return await this.withResultLocks(params.runId, [params.resultId], () => this.setTestResultOutcomeExclusive(params));
+  }
+
+  private async setTestResultOutcomeExclusive(params: SetTestResultOutcomeParams) {
     try {
       const testApi = await this.getTestApi();
       const now = new Date();
@@ -996,6 +1039,10 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   public async addTestResultComment(params: AddTestResultCommentParams) {
+    return await this.withResultLocks(params.runId, [params.resultId], () => this.addTestResultCommentExclusive(params));
+  }
+
+  private async addTestResultCommentExclusive(params: AddTestResultCommentParams) {
     try {
       const testApi = await this.getTestApi();
       const existing = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
@@ -1096,6 +1143,10 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   public async updateTestResultAnalysis(params: UpdateTestResultAnalysisParams) {
+    return await this.withResultLocks(params.runId, [params.resultId], () => this.updateTestResultAnalysisExclusive(params));
+  }
+
+  private async updateTestResultAnalysisExclusive(params: UpdateTestResultAnalysisParams) {
     try {
       if (
         params.failureType === undefined && params.resolutionState === undefined &&
@@ -1445,25 +1496,31 @@ export class TestExecutionService extends AzureDevOpsService {
       const testApi = await this.getTestApi();
       const run = await testApi.getTestRunById(this.config.project, params.runId);
 
-      // A whole run is read page by page, with the work items each result already has.
-      const existingResults: TestCaseResult[] =
+      // Which results: the one given, or every result of the run (read page by page).
+      const resultIds: number[] =
         params.resultId !== undefined
-          ? [await testApi.getTestResultById(this.config.project, params.runId, params.resultId, ResultDetails.WorkItems)]
-          : await this.getAllRunResults(params.runId, ResultDetails.WorkItems);
+          ? [params.resultId]
+          : (await this.getAllRunResults(params.runId)).map((r) => r.id!);
 
-      // associatedBugs replaces the list, so merge with what each result already has.
-      const resultIds: number[] = [];
-      const updates: TestCaseResult[] = [];
-      for (const existing of existingResults) {
-        const resultId = params.resultId ?? existing.id!;
-        const ids = new Set((existing.associatedBugs || []).map((b) => String(b.id)));
-        params.workItemIds.forEach((id) => ids.add(String(id)));
-        resultIds.push(resultId);
-        updates.push(await this.buildResultUpdate(existing, { id: resultId, associatedBugs: [...ids].map((id) => ({ id })) }));
-      }
-      // bounded batches, so a large run is not sent as one huge request
-      for (let i = 0; i < updates.length; i += RESULT_UPDATE_BATCH_SIZE) {
-        await testApi.updateTestResults(updates.slice(i, i + RESULT_UPDATE_BATCH_SIZE), this.config.project, params.runId);
+      // associatedBugs replaces the list, so each result's current bugs are read and merged. That
+      // read-merge-write is done under the results' locks, a bounded batch at a time, so neither a
+      // large run in one huge request nor a concurrent edit can lose an update.
+      for (let i = 0; i < resultIds.length; i += RESULT_UPDATE_BATCH_SIZE) {
+        const batch = resultIds.slice(i, i + RESULT_UPDATE_BATCH_SIZE);
+        await this.withResultLocks(params.runId, batch, async () => {
+          const existingResults = await mapWithConcurrency(batch, RUN_LOOKUP_CONCURRENCY, (id) =>
+            testApi.getTestResultById(this.config.project, params.runId, id, ResultDetails.WorkItems)
+          );
+          const updates: TestCaseResult[] = [];
+          for (let j = 0; j < batch.length; j++) {
+            const ids = new Set((existingResults[j].associatedBugs || []).map((b) => String(b.id)));
+            params.workItemIds.forEach((id) => ids.add(String(id)));
+            updates.push(
+              await this.buildResultUpdate(existingResults[j], { id: batch[j], associatedBugs: [...ids].map((id) => ({ id })) })
+            );
+          }
+          await testApi.updateTestResults(updates, this.config.project, params.runId);
+        });
       }
 
       const hyperlinked: number[] = [];
