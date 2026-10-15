@@ -22,6 +22,18 @@ follows [Semantic Versioning](https://semver.org/).
   last run, last reset to Active, optional per-point results), `linkTestRunToWorkItems`, `createBugFromTestRun`
   and `updateBugWithTestRun`.
 
+### Known issues
+
+- **Release and test-results calls fail behind Zscaler TLS inspection.** `deleteTestRunAttachment`
+  (Test Results service, `vstmr.dev.azure.com`) and the release-based tools
+  (`listReleaseDefinitions`, `getReleaseDefinitionDetails`, automated `startTestRun`; Release
+  service, `vsrm.dev.azure.com`) fail with `unable to get local issuer certificate` on networks
+  where Zscaler re-signs those two hosts, because Node.js does not trust its root certificate.
+  The delete call is implemented as the web UI makes it but has not yet succeeded through the
+  tool; the release tools have not been run live. Needs a DevOps change (bypass inspection for
+  those hosts, or distribute the root via `NODE_EXTRA_CA_CERTS`); see
+  `docs/devops-request-ado-tls-inspection.md`. To retest live once that is done.
+
 ### Changed
 
 - `getTestAutomationStatus` now reads the real run state and counts from Azure DevOps instead of

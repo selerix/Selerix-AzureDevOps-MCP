@@ -268,5 +268,19 @@ Notes:
   or the `"parent;child"` ids to mark the steps inside it.
 - `assignTester` takes the tester's identity GUID. An email or display name is looked up among the
   members of the project's teams (Azure DevOps itself rejects anything but a GUID).
+- **Corporate TLS inspection (Zscaler) blocks some of these tools.** `deleteTestRunAttachment` goes
+  through the Test Results service (`vstmr.dev.azure.com`), and `listReleaseDefinitions`,
+  `getReleaseDefinitionDetails` and automated `startTestRun` go through the Release service
+  (`vsrm.dev.azure.com`). Zscaler re-signs those two hosts with its own root certificate, which
+  Node.js does not trust, so the calls fail with `unable to get local issuer certificate`. The
+  other test-execution tools use `dev.azure.com`, which is not inspected, and are unaffected.
+  - Status: the delete call hits this error on the corporate network (confirmed live); it has not
+    yet succeeded through the tool, only through the Azure DevOps web UI. The release calls have
+    not been run live and are expected to fail the same way.
+  - Fix, outside this repo: DevOps either bypasses TLS inspection for those hosts or makes Node
+    trust the Zscaler root (`NODE_EXTRA_CA_CERTS`). The request is in
+    [docs/devops-request-ado-tls-inspection.md](docs/devops-request-ado-tls-inspection.md).
+  - Once that is done, retest `deleteTestRunAttachment` and the release tools live. No code
+    change is expected.
 
 If you need to add more tools, make sure to implement them in the appropriate tools class first, and then register them in the `index.ts` file following the pattern shown above. 
