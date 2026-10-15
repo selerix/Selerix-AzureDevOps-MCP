@@ -1,5 +1,6 @@
 import { AzureDevOpsConfig } from "../Interfaces/AzureDevOps";
 import { AzureDevOpsService } from "./AzureDevOpsService";
+import { TestOutcome } from "azure-devops-node-api/interfaces/TestInterfaces";
 import {
   RunAutomatedTestsParams,
   GetTestAutomationStatusParams,
@@ -34,18 +35,54 @@ export class TestingCapabilitiesService extends AzureDevOpsService {
 
   async getTestAutomationStatus(params: GetTestAutomationStatusParams) {
     const testApi = await this.connection.getTestApi();
-    const run = await testApi.getTestRunById(this.config.project, params.testRunId);
+    const run = await testApi.getTestRunById(this.config.project, params.testRunId, true);
     const totalTests = run.totalTests ?? 0;
     const incompleteTests = run.incompleteTests ?? 0;
     const passedTests = run.passedTests ?? 0;
+
+    // Failed results are counted as such. They are not "completed minus passed minus not
+    // applicable": a completed result can also be Blocked, Inconclusive, Timeout and so on, and
+    // none of those is a failure.
+    let outcomes: Record<string, number> | undefined;
+    let failedTests: number;
+    if (run.runStatistics?.length) {
+      outcomes = {};
+      for (const stat of run.runStatistics) {
+        outcomes[stat.outcome] = (outcomes[stat.outcome] ?? 0) + stat.count;
+      }
+      failedTests = Object.entries(outcomes)
+        .filter(([outcome]) => outcome.toLowerCase() === "failed")
+        .reduce((sum, [, count]) => sum + count, 0);
+    } else {
+      failedTests = await this.countFailedResults(params.testRunId);
+    }
+
     return {
       testRunId: params.testRunId,
       status: run.state,
       completedTests: totalTests - incompleteTests,
       totalTests,
       passedTests,
-      failedTests: totalTests - incompleteTests - passedTests - (run.notApplicableTests ?? 0),
+      failedTests,
+      outcomes,
     };
+  }
+
+  /** Count a run's Failed results by reading them page by page (when the run carries no statistics). */
+  private async countFailedResults(runId: number): Promise<number> {
+    const testApi = await this.connection.getTestApi();
+    const pageSize = 1000;
+    let count = 0;
+    for (let page = 0; page < 100; page++) {
+      const results = await testApi.getTestResults(
+        this.config.project, runId, undefined, page * pageSize, pageSize, [TestOutcome.Failed]
+      );
+      count += results?.length ?? 0;
+      if (!results || results.length < pageSize) {
+        break;
+      }
+    }
+    return count;
   }
 
   async configureTestAgents(params: ConfigureTestAgentsParams) {
