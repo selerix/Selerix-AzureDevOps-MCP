@@ -275,7 +275,9 @@ Notes:
   to this server only; an edit made in the web UI or by another server at the same time can still
   be overwritten.
 - `assignTester` takes the tester's identity GUID. An email or display name is looked up among the
-  members of the project's teams (Azure DevOps itself rejects anything but a GUID).
+  members of the project's teams (Azure DevOps itself rejects anything but a GUID). An email matches the
+  account name only. A display name that more than one person has, or a search that could not cover
+  every team and member, is refused with a request for the email or GUID, never guessed.
 - **Corporate TLS inspection (Zscaler) blocks some of these tools.** `deleteTestRunAttachment` goes
   through the Test Results service (`vstmr.dev.azure.com`), and `listReleaseDefinitions`,
   `getReleaseDefinitionDetails` and automated `startTestRun` go through the Release service

@@ -1358,13 +1358,23 @@ export class TestExecutionService extends AzureDevOpsService {
     if (tester.id) {
       return { id: tester.id, uniqueName: tester.uniqueName, displayName: tester.displayName };
     }
-    const needle = (tester.uniqueName ?? tester.displayName)!.trim().toLowerCase();
+    // An email is matched against the account name only - never against somebody's display name.
+    // Account names are unique, so the first match is the person. Display names are not, so every
+    // match is collected (by identity GUID, a person can be in several teams) and more than one is
+    // refused rather than guessed.
+    const byAccount = tester.uniqueName !== undefined;
+    const wanted = (byAccount ? tester.uniqueName! : tester.displayName!).trim();
+    const needle = wanted.toLowerCase();
+    const matches = new Map<string, { id: string; uniqueName?: string; displayName?: string }>();
+    let incomplete = false;
+
     const coreApi = await this.connection.getCoreApi();
     // Teams and each team's members are both paged (top/skip), so every page is read before
-    // concluding the person is absent. A page that adds nothing new ends the loop, in case a
-    // server ignores skip and keeps returning the same page.
+    // concluding anything. A full page that adds nothing new means the server is ignoring skip, and
+    // reaching the page limit means there is more than can be read: both make the search incomplete.
     const seenTeams = new Set<string>();
-    for (let teamPage = 0; teamPage < MAX_IDENTITY_PAGES; teamPage++) {
+    let teamsDone = false;
+    for (let teamPage = 0; teamPage < MAX_IDENTITY_PAGES && !teamsDone; teamPage++) {
       const teams = (await coreApi.getTeams(this.config.project, false, IDENTITY_PAGE_SIZE, teamPage * IDENTITY_PAGE_SIZE)) || [];
       const newTeams = teams.filter((t) => {
         if (!t.id || seenTeams.has(t.id)) return false;
@@ -1374,16 +1384,21 @@ export class TestExecutionService extends AzureDevOpsService {
 
       for (const team of newTeams) {
         const seenMembers = new Set<string>();
-        for (let memberPage = 0; memberPage < MAX_IDENTITY_PAGES; memberPage++) {
+        let membersDone = false;
+        for (let memberPage = 0; memberPage < MAX_IDENTITY_PAGES && !membersDone; memberPage++) {
           const members =
             (await coreApi.getTeamMembersWithExtendedProperties(
               this.config.project, team.id!, IDENTITY_PAGE_SIZE, memberPage * IDENTITY_PAGE_SIZE
             )) || [];
-          const match = members.find(
-            (m) => m.identity?.uniqueName?.toLowerCase() === needle || m.identity?.displayName?.toLowerCase() === needle
-          );
-          if (match?.identity?.id) {
-            return { id: match.identity.id, uniqueName: match.identity.uniqueName, displayName: match.identity.displayName };
+          for (const m of members) {
+            const identity = m.identity;
+            const name = byAccount ? identity?.uniqueName : identity?.displayName;
+            if (identity?.id && name?.trim().toLowerCase() === needle) {
+              matches.set(identity.id, { id: identity.id, uniqueName: identity.uniqueName, displayName: identity.displayName });
+              if (byAccount) {
+                return matches.get(identity.id)!;
+              }
+            }
           }
           const newMembers = members.filter((m) => {
             const id = m.identity?.id;
@@ -1391,17 +1406,47 @@ export class TestExecutionService extends AzureDevOpsService {
             seenMembers.add(id);
             return true;
           });
-          if (members.length < IDENTITY_PAGE_SIZE || newMembers.length === 0) {
-            break;
+          if (members.length < IDENTITY_PAGE_SIZE) {
+            membersDone = true; // the last page
+          } else if (newMembers.length === 0) {
+            incomplete = true; // a full page with nothing new: skip is being ignored
+            membersDone = true;
           }
         }
+        if (!membersDone) {
+          incomplete = true; // page limit reached
+        }
       }
-      if (teams.length < IDENTITY_PAGE_SIZE || newTeams.length === 0) {
-        break;
+      if (teams.length < IDENTITY_PAGE_SIZE) {
+        teamsDone = true;
+      } else if (newTeams.length === 0) {
+        incomplete = true;
+        teamsDone = true;
       }
     }
+    if (!teamsDone) {
+      incomplete = true;
+    }
+
+    const describe = (m: { uniqueName?: string; displayName?: string }) => m.uniqueName ?? m.displayName ?? "unknown";
+    if (matches.size > 1) {
+      throw new Error(
+        `'${wanted}' matches more than one person (${[...matches.values()].map(describe).join(", ")}); ` +
+          `pass the person's email as uniqueName, or the identity GUID as id`
+      );
+    }
+    if (incomplete) {
+      throw new Error(
+        matches.size === 1
+          ? `Found '${wanted}' but could not search every team and member to be sure nobody else has that name; pass the person's email as uniqueName, or the identity GUID as id`
+          : `Could not search every team and member for '${wanted}'; pass the identity GUID as id`
+      );
+    }
+    if (matches.size === 1) {
+      return [...matches.values()][0];
+    }
     throw new Error(
-      `Could not find '${tester.uniqueName ?? tester.displayName}' among the members of the project's teams; pass the tester's identity GUID as tester.id`
+      `Could not find '${wanted}' among the members of the project's teams; pass the tester's identity GUID as tester.id`
     );
   }
 

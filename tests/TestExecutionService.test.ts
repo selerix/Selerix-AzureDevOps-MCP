@@ -1240,15 +1240,95 @@ describe('TestExecutionService', () => {
         expect(testApi.updateTestResults.mock.calls[0][0][0].owner.id).toBe('guid-9');
       });
 
-      it('stops, and reports nobody found, when a server ignores skip and repeats the same page', async () => {
+      it('stops, and says the search was incomplete, when a server ignores skip and repeats the same page', async () => {
         coreApi.getTeams.mockResolvedValue(Array.from({ length: 100 }, () => ({ id: 'same-team' })));
         coreApi.getTeamMembersWithExtendedProperties.mockResolvedValue(Array.from({ length: 100 }, (_, i) => person(i)));
         await expect(
           service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'nobody@selerix.com' } })
-        ).rejects.toThrow("Could not find 'nobody@selerix.com'");
+        ).rejects.toThrow("Could not search every team and member for 'nobody@selerix.com'");
         // the first page has a new team so a second is requested; it repeats, which ends the search
         expect(coreApi.getTeams).toHaveBeenCalledTimes(2);
         expect(coreApi.getTeamMembersWithExtendedProperties).toHaveBeenCalledTimes(2);
+      });
+
+      describe('names that more than one person could match', () => {
+        const patSmith = { identity: { id: 'guid-8', uniqueName: 'pat.smith@selerix.com', displayName: 'Pat Tester' } };
+        const updated = () => testApi.updateTestPoints.mock.calls.length + testApi.updateTestResults.mock.calls.length;
+
+        it('refuses a display name shared by two people, naming both, and changes nothing', async () => {
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }, { id: 't2' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockImplementation(async (_p: string, team: string) =>
+            team === 't1' ? [pat] : [patSmith]);
+          await expect(
+            service.assignTester({ planId: 1, testCaseIds: [5], tester: { displayName: 'Pat Tester' } })
+          ).rejects.toThrow(
+            "'Pat Tester' matches more than one person (pat.tester@selerix.com, pat.smith@selerix.com); pass the person's email as uniqueName, or the identity GUID as id"
+          );
+          expect(updated()).toBe(0);
+        });
+
+        it('refuses an ambiguous analysis owner the same way', async () => {
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }, { id: 't2' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockImplementation(async (_p: string, team: string) =>
+            team === 't1' ? [pat] : [patSmith]);
+          testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+          await expect(
+            service.updateTestResultAnalysis({ runId: 77, resultId: 100000, analysisOwner: { displayName: 'Pat Tester' } })
+          ).rejects.toThrow('matches more than one person');
+          expect(updated()).toBe(0);
+        });
+
+        it('does not treat one person in several teams as ambiguous', async () => {
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }, { id: 't2' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockResolvedValue([pat]);
+          await service.assignTester({ planId: 1, testCaseIds: [5], tester: { displayName: 'Pat Tester' } });
+          expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-9');
+        });
+
+        it('keeps looking after the first display-name match, so a later namesake is found too', async () => {
+          // the namesake is on the last page of the last team
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockImplementation(async (_p: string, _t: string, _top: number, skip: number) =>
+            skip === 0 ? [pat, ...Array.from({ length: 99 }, (_, i) => person(i))] : [patSmith]);
+          await expect(
+            service.assignTester({ planId: 1, testCaseIds: [5], tester: { displayName: 'Pat Tester' } })
+          ).rejects.toThrow('matches more than one person');
+        });
+
+        it('matches an email against the account name, not against somebody\'s display name', async () => {
+          const decoy = { identity: { id: 'guid-decoy', uniqueName: 'decoy@selerix.com', displayName: 'pat.tester@selerix.com' } };
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockResolvedValue([decoy, pat]);
+          await service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'pat.tester@selerix.com' } });
+          expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-9');
+        });
+
+        it('does not accept an email that only matches a display name', async () => {
+          const decoy = { identity: { id: 'guid-decoy', uniqueName: 'decoy@selerix.com', displayName: 'pat.tester@selerix.com' } };
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockResolvedValue([decoy]);
+          await expect(
+            service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'pat.tester@selerix.com' } })
+          ).rejects.toThrow("Could not find 'pat.tester@selerix.com'");
+          expect(updated()).toBe(0);
+        });
+
+        it('refuses a single match when the search could not cover everyone', async () => {
+          // one team whose member list repeats, so the rest cannot be read
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockResolvedValue([pat, ...Array.from({ length: 99 }, (_, i) => person(i))]);
+          await expect(
+            service.assignTester({ planId: 1, testCaseIds: [5], tester: { displayName: 'Pat Tester' } })
+          ).rejects.toThrow("Found 'Pat Tester' but could not search every team and member");
+          expect(updated()).toBe(0);
+        });
+
+        it('still returns an account-name match found before the search runs out', async () => {
+          coreApi.getTeams.mockResolvedValue([{ id: 't1' }]);
+          coreApi.getTeamMembersWithExtendedProperties.mockResolvedValue([pat, ...Array.from({ length: 99 }, (_, i) => person(i))]);
+          await service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'pat.tester@selerix.com' } });
+          expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-9');
+        });
       });
 
       it('does not search when a GUID is given', async () => {
