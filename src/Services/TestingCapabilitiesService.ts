@@ -18,6 +18,10 @@ import {
   GetExploratoryTestStatisticsParams
 } from "../Interfaces/TestingCapabilities";
 
+// Failed results read per request, and requests made at most, when counting them one page at a time.
+const FAILED_COUNT_PAGE_SIZE = 1000;
+const MAX_FAILED_COUNT_PAGES = 1000;
+
 export class TestingCapabilitiesService extends AzureDevOpsService {
   constructor(config: AzureDevOpsConfig) {
     super(config);
@@ -45,6 +49,7 @@ export class TestingCapabilitiesService extends AzureDevOpsService {
     // none of those is a failure.
     let outcomes: Record<string, number> | undefined;
     let failedTests: number;
+    let failedTestsIsLowerBound = false;
     if (run.runStatistics?.length) {
       outcomes = {};
       for (const stat of run.runStatistics) {
@@ -54,7 +59,9 @@ export class TestingCapabilitiesService extends AzureDevOpsService {
         .filter(([outcome]) => outcome.toLowerCase() === "failed")
         .reduce((sum, [, count]) => sum + count, 0);
     } else {
-      failedTests = await this.countFailedResults(params.testRunId);
+      const counted = await this.countFailedResults(params.testRunId);
+      failedTests = counted.count;
+      failedTestsIsLowerBound = !counted.complete;
     }
 
     return {
@@ -64,25 +71,37 @@ export class TestingCapabilitiesService extends AzureDevOpsService {
       totalTests,
       passedTests,
       failedTests,
+      // set only when the count could not be completed, so failedTests is at least this many
+      failedTestsIsLowerBound: failedTestsIsLowerBound || undefined,
       outcomes,
     };
   }
 
-  /** Count a run's Failed results by reading them page by page (when the run carries no statistics). */
-  private async countFailedResults(runId: number): Promise<number> {
+  /**
+   * Count a run's Failed results by reading them page by page (when the run carries no
+   * statistics), to the end. If that cannot be done - the page limit is reached, or the server
+   * keeps returning the same page - the count so far is returned marked incomplete, so it is
+   * never presented as the total.
+   */
+  private async countFailedResults(runId: number): Promise<{ count: number; complete: boolean }> {
     const testApi = await this.connection.getTestApi();
-    const pageSize = 1000;
     let count = 0;
-    for (let page = 0; page < 100; page++) {
+    let previousFirstId: number | undefined;
+    for (let page = 0; page < MAX_FAILED_COUNT_PAGES; page++) {
       const results = await testApi.getTestResults(
-        this.config.project, runId, undefined, page * pageSize, pageSize, [TestOutcome.Failed]
+        this.config.project, runId, undefined, page * FAILED_COUNT_PAGE_SIZE, FAILED_COUNT_PAGE_SIZE, [TestOutcome.Failed]
       );
+      const firstId = results?.[0]?.id;
+      if (page > 0 && firstId !== undefined && firstId === previousFirstId) {
+        return { count, complete: false }; // the same page again: the server is ignoring skip
+      }
+      previousFirstId = firstId;
       count += results?.length ?? 0;
-      if (!results || results.length < pageSize) {
-        break;
+      if (!results || results.length < FAILED_COUNT_PAGE_SIZE) {
+        return { count, complete: true };
       }
     }
-    return count;
+    return { count, complete: false };
   }
 
   async configureTestAgents(params: ConfigureTestAgentsParams) {

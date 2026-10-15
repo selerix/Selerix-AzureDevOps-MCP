@@ -77,6 +77,63 @@ describe('TestingCapabilitiesService.getTestAutomationStatus', () => {
     expect(testApi.getTestResults).toHaveBeenNthCalledWith(2, 'Engineering', 77, undefined, 1000, 1000, [TestOutcome.Failed]);
   });
 
+  describe('counting Failed results one page at a time', () => {
+    const page = (from: number, size: number) => Array.from({ length: size }, (_, i) => ({ id: from + i }));
+    const noStatistics = () => testApi.getTestRunById.mockResolvedValue({ state: 'Completed', totalTests: 200000, incompleteTests: 0, passedTests: 0 });
+
+    it('reads past 100,000 failures and returns the real total', async () => {
+      noStatistics();
+      // 150 full pages (150,000) and then a short one of 10
+      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
+        skip < 150000 ? page(skip, 1000) : page(skip, 10));
+      const out = await service.getTestAutomationStatus({ testRunId: 77 });
+
+      expect(out.failedTests).toBe(150010);
+      expect(out.failedTestsIsLowerBound).toBeUndefined();
+      expect(testApi.getTestResults).toHaveBeenCalledTimes(151);
+    });
+
+    it('says the count is only a lower bound when the page limit is reached', async () => {
+      noStatistics();
+      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) => page(skip, 1000));
+      const out = await service.getTestAutomationStatus({ testRunId: 77 });
+
+      expect(testApi.getTestResults).toHaveBeenCalledTimes(1000);
+      expect(out.failedTests).toBe(1000000);
+      expect(out.failedTestsIsLowerBound).toBe(true);
+    });
+
+    it('stops and flags the count when the server keeps returning the same page', async () => {
+      noStatistics();
+      testApi.getTestResults.mockResolvedValue(page(0, 1000));
+      const out = await service.getTestAutomationStatus({ testRunId: 77 });
+
+      expect(testApi.getTestResults).toHaveBeenCalledTimes(2);
+      expect(out.failedTests).toBe(1000);
+      expect(out.failedTestsIsLowerBound).toBe(true);
+    });
+
+    it('does not flag an exact multiple of the page size that ends with an empty page', async () => {
+      noStatistics();
+      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
+        skip === 0 ? page(0, 1000) : []);
+      const out = await service.getTestAutomationStatus({ testRunId: 77 });
+      expect(out.failedTests).toBe(1000);
+      expect(out.failedTestsIsLowerBound).toBeUndefined();
+    });
+
+    it('never sets the flag when the statistics give the count', async () => {
+      testApi.getTestRunById.mockResolvedValue({
+        state: 'Completed', totalTests: 3, incompleteTests: 0, passedTests: 1,
+        runStatistics: [{ state: 'Completed', outcome: 'Failed', count: 2 }, { state: 'Completed', outcome: 'Passed', count: 1 }]
+      });
+      const out = await service.getTestAutomationStatus({ testRunId: 77 });
+      expect(out.failedTests).toBe(2);
+      expect(out.failedTestsIsLowerBound).toBeUndefined();
+      expect(testApi.getTestResults).not.toHaveBeenCalled();
+    });
+  });
+
   it('reports zero failures for an empty run', async () => {
     testApi.getTestRunById.mockResolvedValue({ state: 'NotStarted' });
     testApi.getTestResults.mockResolvedValue([]);
