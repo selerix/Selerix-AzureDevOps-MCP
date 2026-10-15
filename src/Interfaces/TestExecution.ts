@@ -63,6 +63,43 @@ export interface StartTestRunParams {
   runIdVariableName?: string;
 }
 
+export interface TestResultRef {
+  runId: number;
+  resultId: number;
+}
+
+export interface GetTestResultParams extends TestResultRef {
+  /** Include the test case's steps merged with any outcomes already recorded (default true) */
+  includeSteps?: boolean;
+}
+
+export interface StepOutcomeUpdate {
+  /** Step id as shown by getTestResult (1-based within the test case) */
+  stepId: number;
+  outcome: TestStepOutcome;
+  /** Comment shown on the step; mainly useful on a failing step */
+  comment?: string;
+}
+
+export interface SetTestStepResultsParams extends TestResultRef {
+  /** Selected steps to mark */
+  steps?: StepOutcomeUpdate[];
+  /** Mark every step of the test case with this outcome (explicit `steps` entries still win) */
+  allStepsOutcome?: TestStepOutcome;
+  /** Comment applied to every step marked through allStepsOutcome */
+  allStepsComment?: string;
+}
+
+export interface SetTestResultOutcomeParams extends TestResultRef {
+  outcome: TestResultOutcome;
+  comment?: string;
+}
+
+export interface CompleteTestRunParams {
+  runId: number;
+  comment?: string;
+}
+
 export interface StartedTestResult {
   resultId: number;
   testCaseId?: number;

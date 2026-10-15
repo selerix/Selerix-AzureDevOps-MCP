@@ -6,9 +6,14 @@ import { IReleaseApi } from "azure-devops-node-api/ReleaseApi";
 import { IBuildApi } from "azure-devops-node-api/BuildApi";
 import { BuildQueryOrder, BuildStatus } from "azure-devops-node-api/interfaces/BuildInterfaces";
 import { EnvironmentStatus } from "azure-devops-node-api/interfaces/ReleaseInterfaces";
+import { ResultDetails, TestActionResultModel } from "azure-devops-node-api/interfaces/TestInterfaces";
 import {
+  CompleteTestRunParams,
   GetReleaseDefinitionDetailsParams,
+  GetTestResultParams,
   ListReleaseDefinitionsParams,
+  SetTestResultOutcomeParams,
+  SetTestStepResultsParams,
   ParsedTestStep,
   ResolvedTestPoint,
   StartedTestResult,
@@ -331,6 +336,185 @@ export class TestExecutionService extends AzureDevOpsService {
     );
 
     return { id: release.id, name: release.name, stage: stage.name! };
+  }
+
+  /** Fetch a test case's steps from its work item. */
+  protected async getTestCaseSteps(testCaseId: number): Promise<ParsedTestStep[]> {
+    const witApi = await this.getWorkItemTrackingApi();
+    const workItem = await witApi.getWorkItem(testCaseId, ["Microsoft.VSTS.TCM.Steps"], undefined, undefined, this.config.project);
+    return parseTestSteps(workItem?.fields?.["Microsoft.VSTS.TCM.Steps"]);
+  }
+
+  protected async getResultWithIterations(runId: number, resultId: number) {
+    const testApi = await this.getTestApi();
+    return await testApi.getTestResultById(this.config.project, runId, resultId, ResultDetails.Iterations);
+  }
+
+  public async getTestResult(params: GetTestResultParams) {
+    try {
+      const testApi = await this.getTestApi();
+      const result = await this.getResultWithIterations(params.runId, params.resultId);
+      const attachments = await testApi.getTestResultAttachments(this.config.project, params.runId, params.resultId);
+
+      let steps;
+      if (params.includeSteps !== false && result.testCase?.id) {
+        const recorded = new Map(
+          (result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath, a])
+        );
+        steps = (await this.getTestCaseSteps(Number(result.testCase.id))).map((s) => ({
+          stepId: s.id,
+          type: s.type,
+          action: s.action,
+          expectedResult: s.expectedResult,
+          outcome: recorded.get(s.actionPath)?.outcome,
+          comment: recorded.get(s.actionPath)?.errorMessage,
+        }));
+      }
+
+      return {
+        runId: params.runId,
+        resultId: params.resultId,
+        testCaseId: result.testCase?.id ? Number(result.testCase.id) : undefined,
+        testCaseTitle: result.testCaseTitle,
+        outcome: result.outcome,
+        state: result.state,
+        comment: result.comment,
+        errorMessage: result.errorMessage,
+        failureType: result.failureType,
+        resolutionState: result.resolutionState,
+        owner: result.owner?.displayName,
+        runBy: result.runBy?.displayName,
+        associatedBugs: (result.associatedBugs || []).map((b) => Number(b.id)),
+        steps,
+        attachments: (attachments || []).map((a) => ({ id: a.id, fileName: a.fileName, size: a.size, url: a.url, comment: a.comment })),
+      };
+    } catch (error) {
+      console.error(`Error getting test result ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
+  public async setTestStepResults(params: SetTestStepResultsParams) {
+    try {
+      if ((!params.steps || params.steps.length === 0) && !params.allStepsOutcome) {
+        throw new Error("Provide steps and/or allStepsOutcome");
+      }
+      const testApi = await this.getTestApi();
+      const result = await this.getResultWithIterations(params.runId, params.resultId);
+      if (!result.testCase?.id) {
+        throw new Error(`Result ${params.resultId} has no test case`);
+      }
+      const steps = await this.getTestCaseSteps(Number(result.testCase.id));
+      const byId = new Map(steps.map((s) => [s.id, s]));
+
+      const updates = new Map<string, { outcome: string; comment?: string }>();
+      if (params.allStepsOutcome) {
+        for (const s of steps) {
+          updates.set(s.actionPath, { outcome: params.allStepsOutcome, comment: params.allStepsComment });
+        }
+      }
+      for (const u of params.steps || []) {
+        const step = byId.get(u.stepId);
+        if (!step) {
+          throw new Error(`Step ${u.stepId} not found on test case ${result.testCase.id}. Steps: ${steps.map((s) => s.id).join(", ")}`);
+        }
+        updates.set(step.actionPath, { outcome: u.outcome, comment: u.comment });
+      }
+
+      // Keep outcomes already recorded for steps this call doesn't touch.
+      const iteration = result.iterationDetails?.[0];
+      const iterationId = iteration?.id ?? 1;
+      const now = new Date();
+      const actionResults = new Map<string, TestActionResultModel>(
+        (iteration?.actionResults || []).map((a) => [a.actionPath!, a])
+      );
+      for (const [actionPath, update] of updates) {
+        const step = steps.find((s) => s.actionPath === actionPath)!;
+        actionResults.set(actionPath, {
+          actionPath,
+          iterationId,
+          stepIdentifier: String(step.id),
+          outcome: update.outcome,
+          // The web runner shows a step's comment from errorMessage.
+          errorMessage: update.comment ?? "",
+          startedDate: now,
+          completedDate: now,
+        });
+      }
+
+      const all = [...actionResults.values()];
+      const iterationOutcome = all.some((a) => a.outcome === "Failed")
+        ? "Failed"
+        : steps.length > 0 && steps.every((s) => actionResults.get(s.actionPath)?.outcome === "Passed")
+          ? "Passed"
+          : iteration?.outcome ?? "None";
+
+      const updated = await testApi.updateTestResults(
+        [
+          {
+            id: params.resultId,
+            iterationDetails: [{ id: iterationId, outcome: iterationOutcome, actionResults: all }],
+          },
+        ],
+        this.config.project,
+        params.runId
+      );
+      return {
+        runId: params.runId,
+        resultId: params.resultId,
+        stepsUpdated: updates.size,
+        iterationOutcome,
+        result: updated?.[0] && { outcome: updated[0].outcome, state: updated[0].state },
+      };
+    } catch (error) {
+      console.error(`Error setting step results for ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
+  public async setTestResultOutcome(params: SetTestResultOutcomeParams) {
+    try {
+      const testApi = await this.getTestApi();
+      const now = new Date();
+      const paused = params.outcome === "Paused";
+      const updated = await testApi.updateTestResults(
+        [
+          {
+            id: params.resultId,
+            outcome: params.outcome,
+            state: paused ? "Paused" : "Completed",
+            comment: params.comment,
+            completedDate: paused ? undefined : now,
+          },
+        ],
+        this.config.project,
+        params.runId
+      );
+      return {
+        runId: params.runId,
+        resultId: params.resultId,
+        outcome: updated?.[0]?.outcome,
+        state: updated?.[0]?.state,
+      };
+    } catch (error) {
+      console.error(`Error setting outcome for ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
+  public async completeTestRun(params: CompleteTestRunParams) {
+    try {
+      const testApi = await this.getTestApi();
+      const run = await testApi.updateTestRun(
+        { state: "Completed", comment: params.comment, completedDate: new Date().toISOString() },
+        this.config.project,
+        params.runId
+      );
+      return { runId: run.id, state: run.state, totalTests: run.totalTests, passedTests: run.passedTests };
+    } catch (error) {
+      console.error(`Error completing test run ${params.runId}:`, error);
+      throw error;
+    }
   }
 
   // __METHODS__
