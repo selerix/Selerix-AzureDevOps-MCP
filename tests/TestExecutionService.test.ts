@@ -181,6 +181,20 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('getTestResult', () => {
+    it('surfaces step outcomes recorded under a path no listed step maps to', async () => {
+      testApi.getTestResultById.mockResolvedValue(
+        resultWithIteration([
+          { actionPath: '00000002', outcome: 'Passed' },
+          { actionPath: '00000010', outcome: 'Failed', errorMessage: 'in shared step' }
+        ])
+      );
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(out.steps![0]).toEqual(expect.objectContaining({ stepId: 2, outcome: 'Passed' }));
+      expect(out.unmatchedStepResults).toEqual([{ actionPath: '00000010', outcome: 'Failed', comment: 'in shared step' }]);
+    });
+  });
+
   describe('setTestStepResults', () => {
     it('marks selected steps and keeps outcomes already recorded', async () => {
       testApi.getTestResultById.mockResolvedValue(
@@ -297,11 +311,19 @@ describe('TestExecutionService', () => {
       expect(testApi.updateTestResults.mock.calls[0][0][0].comment).toBe('only');
     });
 
-    it('updates the failure analysis', async () => {
-      await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Regression', resolutionState: 'Product Issue' });
-      expect(testApi.updateTestResults.mock.calls[0][0][0]).toEqual(
-        expect.objectContaining({ id: 100000, failureType: 'Regression', resolutionState: 'Product Issue' })
-      );
+    it('updates the failure analysis, storing the resolution by id, and reads it back', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000, failureType: 'Regression', resolutionState: 'Product Issue' });
+      const out = await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Regression', resolutionState: 'Product Issue' });
+      const sent = testApi.updateTestResults.mock.calls[0][0][0];
+      expect(sent).toEqual(expect.objectContaining({ id: 100000, failureType: 'Regression', resolutionStateId: 3 }));
+      expect(sent.resolutionState).toBeUndefined();
+      expect(out).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionState: 'Product Issue' }));
+    });
+
+    it('rejects an unknown resolution state', async () => {
+      await expect(
+        service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionState: 'Whatever' as any })
+      ).rejects.toThrow('resolutionState must be one of');
     });
 
     it('requires at least one analysis field', async () => {

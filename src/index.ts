@@ -2489,8 +2489,8 @@ async function main() {
       {
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
-        failureType: z.enum(["None", "Regression", "New Issue", "Known Issue", "Unknown", "Other"]).optional(),
-        resolutionState: z.string().optional().describe("Resolution, e.g. 'Needs Investigation', 'Product Issue', 'Test Issue' (configured per project)"),
+        failureType: z.enum(["None", "Regression", "New Issue", "Known Issue", "Unknown"]).optional(),
+        resolutionState: z.enum(["Needs Investigation", "Test Issue", "Product Issue", "Configuration Issue"]).optional().describe("Resolution; stored by id, a free-text value is ignored by Azure DevOps"),
         comment: z.string().optional().describe("Analysis comment")
       },
       async (params, extra) => {

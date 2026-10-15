@@ -10,6 +10,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Operation } from "azure-devops-node-api/interfaces/common/VSSInterfaces";
 import { WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces";
+import { TEST_RESOLUTION_STATE_IDS } from "../Interfaces/TestExecution";
 import {
   CreateBugFromTestRunParams,
   UpdateBugWithTestRunParams,
@@ -392,11 +393,19 @@ export class TestExecutionService extends AzureDevOpsService {
       const attachments = await testApi.getTestResultAttachments(this.config.project, params.runId, params.resultId);
 
       let steps;
+      let unmatchedStepResults;
       if (params.includeSteps !== false && result.testCase?.id) {
-        const recorded = new Map(
-          (result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath, a])
-        );
-        steps = (await this.getTestCaseSteps(Number(result.testCase.id))).map((s) => ({
+        const actionResults = result.iterationDetails?.[0]?.actionResults || [];
+        const recorded = new Map(actionResults.map((a) => [a.actionPath, a]));
+        const testCaseSteps = await this.getTestCaseSteps(Number(result.testCase.id));
+        // Outcomes recorded under a path no listed step maps to (e.g. shared-step children, or
+        // another client's path format) would otherwise be silently invisible here.
+        const knownPaths = new Set(testCaseSteps.map((s) => s.actionPath));
+        const unmatched = actionResults.filter((a) => !knownPaths.has(a.actionPath!));
+        unmatchedStepResults = unmatched.length
+          ? unmatched.map((a) => ({ actionPath: a.actionPath, outcome: a.outcome, comment: a.errorMessage }))
+          : undefined;
+        steps = testCaseSteps.map((s) => ({
           stepId: s.id,
           type: s.type,
           action: s.action,
@@ -421,6 +430,7 @@ export class TestExecutionService extends AzureDevOpsService {
         runBy: result.runBy?.displayName,
         associatedBugs: (result.associatedBugs || []).map((b) => Number(b.id)),
         steps,
+        unmatchedStepResults,
         attachments: (attachments || []).map((a) => ({ id: a.id, fileName: a.fileName, size: a.size, url: a.url, comment: a.comment })),
       };
     } catch (error) {
@@ -646,13 +656,18 @@ export class TestExecutionService extends AzureDevOpsService {
         throw new Error("Provide at least one of failureType, resolutionState, comment");
       }
       const testApi = await this.getTestApi();
-      const updated = await testApi.updateTestResults(
-        [{ id: params.resultId, failureType: params.failureType, resolutionState: params.resolutionState, comment: params.comment }],
+      const resolutionStateId = params.resolutionState !== undefined ? TEST_RESOLUTION_STATE_IDS[params.resolutionState] : undefined;
+      if (params.resolutionState !== undefined && resolutionStateId === undefined) {
+        throw new Error(`resolutionState must be one of: ${Object.keys(TEST_RESOLUTION_STATE_IDS).join(", ")}`);
+      }
+      await testApi.updateTestResults(
+        [{ id: params.resultId, failureType: params.failureType, resolutionStateId, comment: params.comment }],
         this.config.project,
         params.runId
       );
-      const r = updated?.[0];
-      return { runId: params.runId, resultId: params.resultId, failureType: r?.failureType, resolutionState: r?.resolutionState, comment: r?.comment };
+      // The update response doesn't echo the analysis fields, so read them back.
+      const r = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
+      return { runId: params.runId, resultId: params.resultId, failureType: r.failureType, resolutionState: r.resolutionState, comment: r.comment };
     } catch (error) {
       console.error(`Error updating analysis for ${params.runId}/${params.resultId}:`, error);
       throw error;

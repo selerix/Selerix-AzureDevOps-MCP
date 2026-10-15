@@ -128,12 +128,21 @@ export interface AddTestResultCommentParams extends TestResultRef {
   replace?: boolean;
 }
 
-export type TestFailureType = "None" | "Regression" | "New Issue" | "Known Issue" | "Unknown" | "Other";
+export type TestFailureType = "None" | "Regression" | "New Issue" | "Known Issue" | "Unknown";
+
+/** Resolution states and the ids the results API stores them under. */
+export const TEST_RESOLUTION_STATE_IDS = {
+  "Needs Investigation": 1,
+  "Test Issue": 2,
+  "Product Issue": 3,
+  "Configuration Issue": 4,
+} as const;
+
+export type TestResolutionState = keyof typeof TEST_RESOLUTION_STATE_IDS;
 
 export interface UpdateTestResultAnalysisParams extends TestResultRef {
   failureType?: TestFailureType;
-  /** Resolution, e.g. "Needs Investigation", "Product Issue", "Test Issue" (configured per project) */
-  resolutionState?: string;
+  resolutionState?: TestResolutionState;
   comment?: string;
 }
 
