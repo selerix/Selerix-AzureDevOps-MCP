@@ -69,6 +69,13 @@ const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_RUN_NAME_LOOKUPS = 25;
 // Pages of test points read for one suite before giving up (Azure DevOps pages them).
 const MAX_POINT_PAGES = 50;
+// Test results are paged with skip/top: results per request, and requests before giving up.
+const RESULT_PAGE_SIZE = 500;
+const MAX_RESULT_PAGES = 200;
+// Results updated per request when linking a whole run to work items.
+const RESULT_UPDATE_BATCH_SIZE = 50;
+// How long the project's resolution states are reused while updating many results.
+const RESOLUTION_STATES_TTL_MS = 60 * 1000;
 // Largest attachment returned inline as base64; anything bigger has to be saved to a file.
 const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
@@ -389,7 +396,7 @@ export class TestExecutionService extends AzureDevOpsService {
         release = await this.startReleaseStage(run.id!, releasePlan!);
       }
 
-      const results = automated ? [] : await testApi.getTestResults(this.config.project, run.id!);
+      const results = automated ? [] : await this.getAllRunResults(run.id!);
       const pointsByCase = new Map<number, number[]>();
       for (const p of points) {
         pointsByCase.set(p.testCaseId, [...(pointsByCase.get(p.testCaseId) || []), p.pointId]);
@@ -605,6 +612,23 @@ export class TestExecutionService extends AzureDevOpsService {
       }
     }
     return await this.getTestCaseSteps(Number(result.testCase?.id), result.testCaseRevision, sharedRevisions);
+  }
+
+  /**
+   * Read every result of a run. Results come back in pages (skip/top), so one call is only the
+   * first page of a large run.
+   */
+  protected async getAllRunResults(runId: number, details?: ResultDetails): Promise<TestCaseResult[]> {
+    const testApi = await this.getTestApi();
+    const all: TestCaseResult[] = [];
+    for (let page = 0; page < MAX_RESULT_PAGES; page++) {
+      const batch = (await testApi.getTestResults(this.config.project, runId, details, all.length, RESULT_PAGE_SIZE)) || [];
+      all.push(...batch);
+      if (batch.length < RESULT_PAGE_SIZE) {
+        return all;
+      }
+    }
+    throw new Error(`Test run ${runId} has more than ${MAX_RESULT_PAGES * RESULT_PAGE_SIZE} results; too many to read at once`);
   }
 
   protected async getResultWithIterations(runId: number, resultId: number) {
@@ -965,6 +989,18 @@ export class TestExecutionService extends AzureDevOpsService {
    * (not a fixed 1-4), and the results API stores a resolution by id, silently ignoring a name.
    * The SDK has no client for this, so it reads the TCMServiceMigration/testresolutionstate route.
    */
+  private resolutionStatesCache?: { at: number; states: { id: number; name: string }[] };
+
+  /** The project's resolution states, reused briefly so updating many results is not one lookup each. */
+  private async getResolutionStatesCached() {
+    if (this.resolutionStatesCache && Date.now() - this.resolutionStatesCache.at < RESOLUTION_STATES_TTL_MS) {
+      return this.resolutionStatesCache.states;
+    }
+    const states = await this.listTestResolutionStates();
+    this.resolutionStatesCache = { at: Date.now(), states };
+    return states;
+  }
+
   public async listTestResolutionStates(_params: ListTestResolutionStatesParams = {}) {
     try {
       const apiVersion = this.config.isOnPremises ? this.config.apiVersion || "5.0-preview.1" : "7.1-preview.1";
@@ -1013,7 +1049,7 @@ export class TestExecutionService extends AzureDevOpsService {
     if (patch.resolutionStateId === undefined) {
       let resolutionStateId = existing.resolutionStateId;
       if (!resolutionStateId && existing.resolutionState) {
-        const states = await this.listTestResolutionStates();
+        const states = await this.getResolutionStatesCached();
         resolutionStateId = states.find((st) => st.name.toLowerCase() === existing.resolutionState!.toLowerCase())?.id;
       }
       if (resolutionStateId) {
@@ -1163,7 +1199,7 @@ export class TestExecutionService extends AzureDevOpsService {
       const testApi = await this.getTestApi();
       if (params.runId !== undefined) {
         const run = await testApi.getTestRunById(this.config.project, params.runId, true);
-        const results = await testApi.getTestResults(this.config.project, params.runId);
+        const results = await this.getAllRunResults(params.runId);
         return {
           runs: [this.summarizeRun(run)],
           results: results.map((r) => ({
@@ -1207,7 +1243,7 @@ export class TestExecutionService extends AzureDevOpsService {
       distinct.map(async (id) => {
         try {
           const run = await testApi.getTestRunById(this.config.project, id);
-          const results = await testApi.getTestResults(this.config.project, id, ResultDetails.WorkItems);
+          const results = await this.getAllRunResults(id, ResultDetails.WorkItems);
           const bugs = new Map<number, number[]>();
           for (const r of results || []) {
             if (r.id !== undefined && r.associatedBugs?.length) {
@@ -1374,20 +1410,26 @@ export class TestExecutionService extends AzureDevOpsService {
       const testApi = await this.getTestApi();
       const run = await testApi.getTestRunById(this.config.project, params.runId);
 
-      const resultIds =
+      // A whole run is read page by page, with the work items each result already has.
+      const existingResults: TestCaseResult[] =
         params.resultId !== undefined
-          ? [params.resultId]
-          : (await testApi.getTestResults(this.config.project, params.runId)).map((r) => r.id!);
+          ? [await testApi.getTestResultById(this.config.project, params.runId, params.resultId, ResultDetails.WorkItems)]
+          : await this.getAllRunResults(params.runId, ResultDetails.WorkItems);
 
       // associatedBugs replaces the list, so merge with what each result already has.
-      const updates = [];
-      for (const resultId of resultIds) {
-        const existing = await testApi.getTestResultById(this.config.project, params.runId, resultId, ResultDetails.WorkItems);
+      const resultIds: number[] = [];
+      const updates: TestCaseResult[] = [];
+      for (const existing of existingResults) {
+        const resultId = params.resultId ?? existing.id!;
         const ids = new Set((existing.associatedBugs || []).map((b) => String(b.id)));
         params.workItemIds.forEach((id) => ids.add(String(id)));
+        resultIds.push(resultId);
         updates.push(await this.buildResultUpdate(existing, { id: resultId, associatedBugs: [...ids].map((id) => ({ id })) }));
       }
-      await testApi.updateTestResults(updates, this.config.project, params.runId);
+      // bounded batches, so a large run is not sent as one huge request
+      for (let i = 0; i < updates.length; i += RESULT_UPDATE_BATCH_SIZE) {
+        await testApi.updateTestResults(updates.slice(i, i + RESULT_UPDATE_BATCH_SIZE), this.config.project, params.runId);
+      }
 
       const hyperlinked: number[] = [];
       if (params.addRunHyperlink !== false && run.webAccessUrl) {

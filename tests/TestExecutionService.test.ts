@@ -257,6 +257,61 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('runs with more results than one page', () => {
+    // results come back 500 at a time (skip/top)
+    const results = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => ({ id: from + i, testCase: { id: '5' }, testPoint: { id: '9' } }));
+    const twoPages = () =>
+      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
+        skip === 0 ? results(1, 500) : results(501, 3));
+
+    it('startTestRun reports the results of every page', async () => {
+      twoPages();
+      const out = await service.startTestRun({ testCaseIds: [5], planId: 1, suiteId: 20, testType: 'manual', runner: 'webApplication' });
+      expect(out.results).toHaveLength(503);
+      expect(testApi.getTestResults.mock.calls.map((c) => c[3])).toEqual([0, 500]);
+    });
+
+    it('getTestRuns with a run id lists the results of every page', async () => {
+      twoPages();
+      const out = await service.getTestRuns({ runId: 77 });
+      expect(out.results).toHaveLength(503);
+    });
+
+    it('links every result of a large run, in bounded batches', async () => {
+      twoPages();
+      const out = await service.linkTestRunToWorkItems({ runId: 77, workItemIds: [12], addRunHyperlink: false });
+
+      expect(out.resultsLinked).toHaveLength(503);
+      // every result is updated, none twice, and no request carries more than 50
+      const batches = testApi.updateTestResults.mock.calls.map((c) => c[0] as { id: number }[]);
+      expect(batches.every((b) => b.length <= 50)).toBe(true);
+      expect(batches).toHaveLength(11);
+      expect(new Set(batches.flat().map((u) => u.id)).size).toBe(503);
+      // the work items already on each result come from the paged read, not one read per result
+      expect(testApi.getTestResultById).not.toHaveBeenCalled();
+    });
+
+    it('keeps the bugs a result already has when linking a whole run', async () => {
+      testApi.getTestResults.mockResolvedValue([{ id: 1, associatedBugs: [{ id: '11' }] }, { id: 2 }]);
+      await service.linkTestRunToWorkItems({ runId: 77, workItemIds: [12], addRunHyperlink: false });
+      expect(testApi.updateTestResults.mock.calls[0][0]).toEqual([
+        expect.objectContaining({ id: 1, associatedBugs: [{ id: '11' }, { id: '12' }] }),
+        expect.objectContaining({ id: 2, associatedBugs: [{ id: '12' }] })
+      ]);
+    });
+
+    it('finds the bugs of results on later pages when enriching history', async () => {
+      testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
+        results: [{ id: 600, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' } }]
+      });
+      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
+        skip === 0 ? results(1, 500) : [{ id: 600, associatedBugs: [{ id: '23256' }] }]);
+      const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+      expect(out.executions[0].associatedBugs).toEqual([23256]);
+    });
+  });
+
   describe('result point ids when a test case has several points', () => {
     it('takes each result\'s own point id instead of the last point of the case', async () => {
       testPlanApi.getPointsList.mockResolvedValue([
@@ -1115,7 +1170,7 @@ describe('TestExecutionService', () => {
       });
       testApi.getTestResults.mockResolvedValue([{ id: 100000, associatedBugs: [{ id: '23256' }] }]);
       const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
-      expect(testApi.getTestResults).toHaveBeenCalledWith('Engineering', 77, 2);
+      expect(testApi.getTestResults).toHaveBeenCalledWith('Engineering', 77, 2, 0, 500);
       expect(out.executions[0].associatedBugs).toEqual([23256]);
     });
 
