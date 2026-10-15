@@ -242,4 +242,26 @@ Here's a list of all the tools mentioned in the README.md file:
 - `getBuildArtifacts`
 - `associateAutomatedTestWithTestCase`
 
+### Test Execution Tools
+Run test cases, record results, and file bugs (`src/Services/TestExecutionService.ts`).
+
+- Run: `startTestRun`, `completeTestRun`, `listReleaseDefinitions`, `getReleaseDefinitionDetails`
+- Record: `getTestResult`, `setTestStepResults`, `setTestResultOutcome`, `addTestResultComment`,
+  `addTestResultAttachment`, `addTestRunAttachment`, `updateTestResultAnalysis`
+- Plan points: `assignTester`, `resetTestToActive`
+- History and links: `getTestRuns`, `getTestCaseExecutionHistory`, `linkTestRunToWorkItems`
+- Bugs: `createBugFromTestRun`, `updateBugWithTestRun`
+
+Notes:
+- `startTestRun` with `testType: "manual"` / `runner: "webApplication"` creates an in-progress run.
+  With `testType: "automated"` / `runner: "releaseStage"` it creates a release from the chosen build
+  with every stage manual, then deploys only the chosen stage. The run id is passed to the release
+  in the variable `test.RunId` (override with `runIdVariableName`); the stage's test task must be
+  set up to run that test run.
+- Screenshots and recordings are uploaded from a local file path. The server cannot capture the
+  screen itself.
+- Step outcomes are stored per step under an 8-digit hex action path. Steps inside shared step sets
+  are not expanded, so they cannot be marked individually.
+- `assignTester` works best with the tester's identity GUID.
+
 If you need to add more tools, make sure to implement them in the appropriate tools class first, and then register them in the `index.ts` file following the pattern shown above. 

@@ -33,13 +33,18 @@ export class TestingCapabilitiesService extends AzureDevOpsService {
   }
 
   async getTestAutomationStatus(params: GetTestAutomationStatusParams) {
+    const testApi = await this.connection.getTestApi();
+    const run = await testApi.getTestRunById(this.config.project, params.testRunId);
+    const totalTests = run.totalTests ?? 0;
+    const incompleteTests = run.incompleteTests ?? 0;
+    const passedTests = run.passedTests ?? 0;
     return {
       testRunId: params.testRunId,
-      status: "in_progress",
-      completedTests: 10,
-      totalTests: 25,
-      passedTests: 8,
-      failedTests: 2,
+      status: run.state,
+      completedTests: totalTests - incompleteTests,
+      totalTests,
+      passedTests,
+      failedTests: totalTests - incompleteTests - passedTests - (run.notApplicableTests ?? 0),
     };
   }
 

@@ -11,6 +11,7 @@ import { PipelinesToolMethods } from './Tools/PipelinesTools';
 import { ProjectToolMethods } from './Tools/ProjectTools';
 import { TestingCapabilitiesToolMethods } from './Tools/TestingCapabilitiesTools';
 import { TestPlansToolMethods } from './Tools/TestPlansTools';
+import { TestExecutionToolMethods } from './Tools/TestExecutionTools';
 import { WorkItemToolMethods } from './Tools/WorkItemTools';
 
 // Try to load environment variables from .env file with multiple possible locations
@@ -163,6 +164,7 @@ const ALL_ALLOWED_TOOLS = AIAssistedDevelopmentToolMethods
   .concat(ProjectToolMethods)
   .concat(TestingCapabilitiesToolMethods)
   .concat(TestPlansToolMethods)
+  .concat(TestExecutionToolMethods)
   .concat(WorkItemToolMethods);
 
 /**

@@ -7,6 +7,25 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Test execution tools** - trigger and manage test runs for one or many test cases:
+  `startTestRun` (manual web runner, or automated via a release pipeline stage with a chosen build),
+  `completeTestRun`, `listReleaseDefinitions`, `getReleaseDefinitionDetails`, `getTestResult`,
+  `setTestStepResults` (mark selected or all steps Passed/Failed with a comment),
+  `setTestResultOutcome` (Passed, Failed, Paused, Blocked, NotApplicable), `addTestResultComment`,
+  `addTestResultAttachment` (screenshots, recordings, files; per result or per step),
+  `addTestRunAttachment`, `updateTestResultAnalysis`, `assignTester`, `resetTestToActive`,
+  `getTestRuns`, `getTestCaseExecutionHistory`, `linkTestRunToWorkItems`, `createBugFromTestRun`
+  and `updateBugWithTestRun`.
+
+### Changed
+
+- `getTestAutomationStatus` now reads the real run state and counts from Azure DevOps instead of
+  returning fixed numbers.
+- `runAutomatedTests` is marked deprecated in its description: it is still a placeholder that does
+  not start a run. Use `startTestRun`.
+
 ## [1.6.1] - 2026-10-06
 
 ### Changed
