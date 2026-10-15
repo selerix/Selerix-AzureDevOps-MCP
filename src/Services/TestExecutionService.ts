@@ -779,6 +779,11 @@ export class TestExecutionService extends AzureDevOpsService {
       if (!params.fileName) {
         throw new Error("fileName is required when uploading via base64Content.");
       }
+      // the same limit as a file: the decoded size, checked before the request body is built
+      const decodedBytes = Buffer.byteLength(params.base64Content, "base64");
+      if (decodedBytes > MAX_TEST_ATTACHMENT_BYTES) {
+        throw new Error(`Content is ${Math.round(decodedBytes / 1048576)} MB; the limit is ${MAX_TEST_ATTACHMENT_BYTES / 1048576} MB`);
+      }
       stream = params.base64Content;
       fileName = params.fileName;
     } else {
@@ -970,13 +975,17 @@ export class TestExecutionService extends AzureDevOpsService {
     if (existing.failureType && existing.failureType !== "None") {
       update.failureType = existing.failureType;
     }
-    let resolutionStateId = existing.resolutionStateId;
-    if (!resolutionStateId && existing.resolutionState) {
-      const states = await this.listTestResolutionStates();
-      resolutionStateId = states.find((st) => st.name.toLowerCase() === existing.resolutionState!.toLowerCase())?.id;
-    }
-    if (resolutionStateId) {
-      update.resolutionStateId = resolutionStateId;
+    // A resolution supplied by the caller replaces the current one, so the current one is not even
+    // looked up (that lookup needs the resolution-state route, which may be unavailable).
+    if (patch.resolutionStateId === undefined) {
+      let resolutionStateId = existing.resolutionStateId;
+      if (!resolutionStateId && existing.resolutionState) {
+        const states = await this.listTestResolutionStates();
+        resolutionStateId = states.find((st) => st.name.toLowerCase() === existing.resolutionState!.toLowerCase())?.id;
+      }
+      if (resolutionStateId) {
+        update.resolutionStateId = resolutionStateId;
+      }
     }
     if (existing.owner?.id) {
       update.owner = { id: existing.owner.id } as TestCaseResult["owner"];

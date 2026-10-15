@@ -469,6 +469,19 @@ describe('TestExecutionService', () => {
       expect(testApi.createTestIterationResultAttachment).toHaveBeenCalledWith(expect.anything(), 'Engineering', 77, 100000, 1, '00000003');
     });
 
+    it('applies the size limit to base64 content as well as files', async () => {
+      // ~110 MB once decoded; only its length matters, so it is never decoded
+      const tooBig = 'A'.repeat(140 * 1024 * 1024);
+      await expect(
+        service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: tooBig, fileName: 'huge.bin' })
+      ).rejects.toThrow('the limit is 100 MB');
+      await expect(
+        service.addTestRunAttachment({ runId: 77, base64Content: tooBig, fileName: 'huge.bin' })
+      ).rejects.toThrow('the limit is 100 MB');
+      expect(testApi.createTestResultAttachment).not.toHaveBeenCalled();
+      expect(testApi.createTestRunAttachment).not.toHaveBeenCalled();
+    });
+
     it('uploads a run attachment', async () => {
       await service.addTestRunAttachment({ runId: 77, base64Content: 'aGk=', fileName: 'notes.txt' });
       expect(testApi.createTestRunAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileName: 'notes.txt', stream: 'aGk=' }), 'Engineering', 77);
@@ -582,6 +595,21 @@ describe('TestExecutionService', () => {
         await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionStateId: 10 });
         expect(restGet).not.toHaveBeenCalled();
         expect(testApi.updateTestResults.mock.calls[0][0][0].resolutionStateId).toBe(10);
+      });
+
+      it('does not look up the current resolution when the caller supplies the replacement id', async () => {
+        // the result reports only a resolution name, and the resolution-state route is unavailable
+        restGet.mockResolvedValue({ statusCode: 404, result: null });
+        testApi.getTestResultById.mockResolvedValue({ id: 100000, resolutionState: 'Test issue' });
+        await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionStateId: 11 });
+        expect(restGet).not.toHaveBeenCalled();
+        expect(testApi.updateTestResults.mock.calls[0][0][0].resolutionStateId).toBe(11);
+      });
+
+      it('still needs the lookup to keep a current resolution that is reported by name only', async () => {
+        restGet.mockResolvedValue({ statusCode: 404, result: null });
+        testApi.getTestResultById.mockResolvedValue({ id: 100000, resolutionState: 'Test issue' });
+        await expect(service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'x' })).rejects.toThrow('pass resolutionStateId');
       });
 
       it('names the available states when the name is unknown', async () => {
