@@ -676,6 +676,45 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('points spread over several pages', () => {
+    // Azure DevOps returns a page as an array carrying a continuationToken.
+    const pageOf = (items: unknown[], continuationToken?: string) => Object.assign([...items], { continuationToken });
+
+    it('acts on the points of every page, not just the first', async () => {
+      testPlanApi.getPointsList
+        .mockResolvedValueOnce(pageOf([{ id: 9, testCaseReference: { id: 5 } }], 'page2'))
+        .mockResolvedValueOnce(pageOf([{ id: 10, testCaseReference: { id: 5 } }]));
+      await service.resetTestToActive({ planId: 1, suiteId: 20, testCaseIds: [5] });
+
+      expect(testPlanApi.getPointsList).toHaveBeenCalledTimes(2);
+      expect(testPlanApi.getPointsList.mock.calls[1][5]).toBe('page2');
+      expect(testApi.updateTestPoints).toHaveBeenCalledWith({ resetToActive: true }, 'Engineering', 1, 20, '9,10');
+    });
+
+    it('refuses to change anything when the points cannot all be read', async () => {
+      testPlanApi.getPointsList.mockResolvedValue(pageOf([{ id: 9, testCaseReference: { id: 5 } }], 'more'));
+      await expect(service.resetTestToActive({ planId: 1, suiteId: 20, testCaseIds: [5] })).rejects.toThrow('narrow the request');
+      expect(testApi.updateTestPoints).not.toHaveBeenCalled();
+      expect(testPlanApi.getPointsList).toHaveBeenCalledTimes(50);
+    });
+
+    it('getTestPoints reads every page before it filters and reports unresolved cases', async () => {
+      testPlanApi.getPointsList
+        .mockResolvedValueOnce(pageOf([{ id: 9, testCaseReference: { id: 6, name: 'Other' } }], 'page2'))
+        .mockResolvedValueOnce(pageOf([{ id: 10, testCaseReference: { id: 5, name: 'Save works' } }]));
+      const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5] });
+      expect(out.points.map((p) => p.pointId)).toEqual([10]);
+      expect(out.unresolvedTestCaseIds).toEqual([]);
+      expect(out.moreAvailable).toBeUndefined();
+    });
+
+    it('getTestPoints flags a suite too large to read in full', async () => {
+      testPlanApi.getPointsList.mockResolvedValue(pageOf([{ id: 9, testCaseReference: { id: 5 } }], 'more'));
+      const out = await service.getTestPoints({ planId: 1, suiteId: 20 });
+      expect(out.moreAvailable).toBe(true);
+    });
+  });
+
   describe('getTestPoints', () => {
     const point = (over: Record<string, unknown> = {}) => ({
       id: 9,

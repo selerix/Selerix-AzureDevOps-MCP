@@ -13,6 +13,7 @@ import * as fs from "fs";
 import * as path from "path";
 import {
   FailureType,
+  TestPoint as TestPlanPoint,
   Outcome as TestPlanOutcome,
   PointState,
   ResultState,
@@ -66,6 +67,8 @@ import {
 const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 // Upper bound on run-name lookups for one history response.
 const MAX_RUN_NAME_LOOKUPS = 25;
+// Pages of test points read for one suite before giving up (Azure DevOps pages them).
+const MAX_POINT_PAGES = 50;
 // Largest attachment returned inline as base64; anything bigger has to be saved to a file.
 const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
@@ -199,6 +202,29 @@ export class TestExecutionService extends AzureDevOpsService {
    * cases. When suiteId is omitted each test case's suites are looked up and filtered to the
    * plan. A test case with several configurations yields one point per configuration.
    */
+  /**
+   * Read every page of a suite's test points, optionally only those of the given test cases.
+   * Azure DevOps returns points in pages with a continuation token; stops after MAX_POINT_PAGES
+   * pages and says so rather than looping forever.
+   */
+  private async getAllPoints(planId: number, suiteId: number, testCaseIds: number[] | undefined, includeDetails: boolean) {
+    const testPlanApi = await this.getTestPlanApi();
+    const points: TestPlanPoint[] = [];
+    let continuationToken: string | undefined;
+    let pages = 0;
+    do {
+      const page = await testPlanApi.getPointsList(
+        this.config.project, planId, suiteId, undefined,
+        testCaseIds && testCaseIds.length ? testCaseIds.join(",") : undefined,
+        continuationToken, undefined, includeDetails, false
+      );
+      points.push(...(page || []));
+      continuationToken = page?.continuationToken || undefined;
+      pages += 1;
+    } while (continuationToken && pages < MAX_POINT_PAGES);
+    return { points, truncated: !!continuationToken };
+  }
+
   /** Group test cases by the suite of the plan that holds them: suite id -> test case ids. */
   private async groupTestCasesBySuite(planId: number, testCaseIds: number[], suiteId?: number): Promise<Map<number, number[]>> {
     const bySuite = new Map<number, number[]>();
@@ -223,23 +249,19 @@ export class TestExecutionService extends AzureDevOpsService {
     testCaseIds: number[],
     suiteId?: number
   ): Promise<{ points: ResolvedTestPoint[]; unresolvedTestCaseIds: number[] }> {
-    const testPlanApi = await this.getTestPlanApi();
     const bySuite = await this.groupTestCasesBySuite(planId, testCaseIds, suiteId);
 
     const points = new Map<number, ResolvedTestPoint>();
     for (const [suite, caseIds] of bySuite) {
-      const suitePoints = await testPlanApi.getPointsList(
-        this.config.project,
-        planId,
-        suite,
-        undefined,
-        caseIds.join(","),
-        undefined,
-        undefined,
-        false,
-        false
-      );
-      for (const point of suitePoints || []) {
+      const { points: suitePoints, truncated } = await this.getAllPoints(planId, suite, caseIds, false);
+      if (truncated) {
+        // These points feed operations that change data (start a run, assign, reset), so a partial
+        // list must not be used silently.
+        throw new Error(
+          `Suite ${suite} has more than ${MAX_POINT_PAGES} pages of test points for these test cases; narrow the request to fewer test cases`
+        );
+      }
+      for (const point of suitePoints) {
         const testCaseId = point.testCaseReference?.id;
         if (point.id !== undefined && testCaseId !== undefined) {
           points.set(point.id, { pointId: point.id, testCaseId, suiteId: suite, planId });
@@ -1118,7 +1140,6 @@ export class TestExecutionService extends AzureDevOpsService {
       if (!hasCases && params.suiteId === undefined) {
         throw new Error("Provide testCaseIds, a suiteId, or both");
       }
-      const testPlanApi = await this.getTestPlanApi();
       const bySuite = hasCases
         ? await this.groupTestCasesBySuite(params.planId, params.testCaseIds!, params.suiteId)
         : new Map<number, number[]>([[params.suiteId!, []]]);
@@ -1126,12 +1147,10 @@ export class TestExecutionService extends AzureDevOpsService {
       const points = [];
       let moreAvailable = false;
       for (const [suiteId, caseIds] of bySuite) {
-        const page = await testPlanApi.getPointsList(
-          this.config.project, params.planId, suiteId, undefined, caseIds.length ? caseIds.join(",") : undefined,
-          undefined, undefined, true, false
-        );
-        moreAvailable = moreAvailable || !!page.continuationToken;
-        for (const p of page || []) {
+        // every page is read before the points are mapped and filtered
+        const { points: suitePoints, truncated } = await this.getAllPoints(params.planId, suiteId, caseIds, true);
+        moreAvailable = moreAvailable || truncated;
+        for (const p of suitePoints) {
           points.push({
             pointId: p.id,
             suiteId,
