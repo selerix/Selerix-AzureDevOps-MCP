@@ -807,22 +807,16 @@ describe('TestExecutionService', () => {
     });
 
     describe('deleting', () => {
+      // The Test API serves run attachments but rejects DELETE; the Test Results API accepts it.
       let del: jest.Mock;
       beforeEach(() => {
-        del = jest.fn().mockResolvedValue({ statusCode: 200 });
-        (testApi as any).vsoClient = {
-          getVersioningData: jest.fn().mockResolvedValue({ requestUrl: 'https://dev.azure.com/selerix/Engineering/_apis/test/Runs/77/attachments/6', apiVersion: '7.2-preview.1' })
-        };
-        testApi.createRequestOptions = jest.fn().mockReturnValue({ acceptHeader: 'application/json' });
-        (testApi as any).rest = { del };
+        del = jest.fn().mockResolvedValue(undefined);
+        (service as any).getTestResultsApi = jest.fn().mockResolvedValue({ deleteTestRunAttachment: del });
       });
 
-      it('deletes one attachment through the REST client', async () => {
+      it('deletes one attachment through the Test Results API', async () => {
         const out = await service.deleteTestRunAttachment({ runId: 77, attachmentId: 6 });
-        expect((testApi as any).vsoClient.getVersioningData).toHaveBeenCalledWith(
-          '7.2-preview.1', 'Test', '4f004af4-a507-489c-9b13-cb62060beb11', { project: 'Engineering', runId: 77, attachmentId: 6 }
-        );
-        expect(del).toHaveBeenCalledWith('https://dev.azure.com/selerix/Engineering/_apis/test/Runs/77/attachments/6', { acceptHeader: 'application/json' });
+        expect(del).toHaveBeenCalledWith('Engineering', 77, 6);
         expect(out).toEqual({ runId: 77, attachmentId: 6, fileName: 'run-a-notes.txt', deleted: true });
       });
 
@@ -831,9 +825,9 @@ describe('TestExecutionService', () => {
         expect(del).not.toHaveBeenCalled();
       });
 
-      it('fails when Azure DevOps refuses the delete', async () => {
-        del.mockResolvedValue({ statusCode: 405 });
-        await expect(service.deleteTestRunAttachment({ runId: 77, attachmentId: 6 })).rejects.toThrow('HTTP 405');
+      it('passes on a failure from Azure DevOps', async () => {
+        del.mockRejectedValue(new Error('Failed request: (403)'));
+        await expect(service.deleteTestRunAttachment({ runId: 77, attachmentId: 6 })).rejects.toThrow('403');
       });
     });
   });

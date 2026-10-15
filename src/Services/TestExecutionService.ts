@@ -4,6 +4,7 @@ import { ITestApi } from "azure-devops-node-api/TestApi";
 import { ITestPlanApi } from "azure-devops-node-api/TestPlanApi";
 import { IReleaseApi } from "azure-devops-node-api/ReleaseApi";
 import { IBuildApi } from "azure-devops-node-api/BuildApi";
+import { ITestResultsApi } from "azure-devops-node-api/TestResultsApi";
 import { BuildQueryOrder, BuildStatus } from "azure-devops-node-api/interfaces/BuildInterfaces";
 import { EnvironmentStatus } from "azure-devops-node-api/interfaces/ReleaseInterfaces";
 import { downloadStreamToFile } from "../utils/downloadStreamToFile";
@@ -67,15 +68,6 @@ const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const MAX_RUN_NAME_LOOKUPS = 25;
 // Largest attachment returned inline as base64; anything bigger has to be saved to a file.
 const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
-// Test API resource that serves a single run attachment (area "Test").
-const TEST_RUN_ATTACHMENT_RESOURCE = "4f004af4-a507-489c-9b13-cb62060beb11";
-
-/** The parts of the SDK's test client needed to issue a request the SDK has no method for. */
-interface RawTestApiClient {
-  vsoClient: { getVersioningData(apiVersion: string, area: string, resourceId: string, routeValues: object): Promise<{ requestUrl: string; apiVersion: string }> };
-  createRequestOptions(type: string, apiVersion?: string): unknown;
-  rest: { del(url: string, options?: unknown): Promise<{ statusCode: number }> };
-}
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
 
@@ -192,6 +184,10 @@ export class TestExecutionService extends AzureDevOpsService {
 
   protected async getReleaseApi(): Promise<IReleaseApi> {
     return await this.connection.getReleaseApi();
+  }
+
+  protected async getTestResultsApi(): Promise<ITestResultsApi> {
+    return await this.connection.getTestResultsApi();
   }
 
   protected async getBuildApi(): Promise<IBuildApi> {
@@ -820,22 +816,14 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   /**
-   * Permanently delete a run attachment. The SDK has no method for this, so the request goes
-   * through the test client's REST plumbing.
+   * Permanently delete a run attachment. This goes through the Test Results API (the web UI's
+   * route): the Test API serves the same attachments but rejects DELETE.
    */
   public async deleteTestRunAttachment(params: DeleteTestRunAttachmentParams) {
     try {
       const attachment = await this.findTestRunAttachment(params.runId, params.attachmentId);
-      const api = (await this.getTestApi()) as unknown as RawTestApiClient;
-      const verData = await api.vsoClient.getVersioningData("7.2-preview.1", "Test", TEST_RUN_ATTACHMENT_RESOURCE, {
-        project: this.config.project,
-        runId: params.runId,
-        attachmentId: params.attachmentId,
-      });
-      const response = await api.rest.del(verData.requestUrl, api.createRequestOptions("application/json", verData.apiVersion));
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw new Error(`Azure DevOps refused to delete attachment ${params.attachmentId} of test run ${params.runId} (HTTP ${response.statusCode})`);
-      }
+      const testResultsApi = await this.getTestResultsApi();
+      await testResultsApi.deleteTestRunAttachment(this.config.project, params.runId, params.attachmentId);
       return { runId: params.runId, attachmentId: params.attachmentId, fileName: attachment.fileName, deleted: true };
     } catch (error) {
       console.error(`Error deleting attachment ${params.attachmentId} of test run ${params.runId}:`, error);
