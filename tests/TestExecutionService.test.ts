@@ -561,12 +561,34 @@ describe('TestExecutionService', () => {
       });
     });
 
+    it('asks for at most 200 results per page when details are requested, and treats only a short page as the last', async () => {
+      // Azure DevOps caps a detailed page at 200: a full 200-result page must be followed by another request
+      testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
+        results: [{ id: 450, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' } }]
+      });
+      // result 450 is on the third page (after 400 results)
+      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
+        skip === 0 ? results(1, 200) : skip === 200 ? results(201, 200) : [{ id: 450, associatedBugs: [{ id: '777' }] }]);
+
+      const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+
+      expect(testApi.getTestResults.mock.calls.map((c) => [c[3], c[4]])).toEqual([[0, 200], [200, 200], [400, 200]]);
+      expect(out.executions[0].associatedBugs).toEqual([777]);
+    });
+
+    it('still reads plain result lists 500 at a time', async () => {
+      testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
+        skip === 0 ? results(1, 500) : []);
+      await service.getTestRuns({ runId: 77 });
+      expect(testApi.getTestResults.mock.calls.map((c) => [c[3], c[4]])).toEqual([[0, 500], [500, 500]]);
+    });
+
     it('finds the bugs of results on later pages when enriching history', async () => {
       testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
         results: [{ id: 600, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' } }]
       });
       testApi.getTestResults.mockImplementation(async (_p: string, _r: number, _d: unknown, skip: number) =>
-        skip === 0 ? results(1, 500) : [{ id: 600, associatedBugs: [{ id: '23256' }] }]);
+        skip === 0 ? results(1, 200) : [{ id: 600, associatedBugs: [{ id: '23256' }] }]);
       const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
       expect(out.executions[0].associatedBugs).toEqual([23256]);
     });
@@ -1455,7 +1477,7 @@ describe('TestExecutionService', () => {
       });
       testApi.getTestResults.mockResolvedValue([{ id: 100000, associatedBugs: [{ id: '23256' }] }]);
       const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
-      expect(testApi.getTestResults).toHaveBeenCalledWith('Engineering', 77, 2, 0, 500);
+      expect(testApi.getTestResults).toHaveBeenCalledWith('Engineering', 77, 2, 0, 200);
       expect(out.executions[0].associatedBugs).toEqual([23256]);
     });
 

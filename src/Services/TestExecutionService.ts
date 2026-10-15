@@ -71,6 +71,8 @@ const RUN_LOOKUP_CONCURRENCY = 5;
 const MAX_POINT_PAGES = 50;
 // Test results are paged with skip/top: results per request, and requests before giving up.
 const RESULT_PAGE_SIZE = 500;
+// Azure DevOps allows at most 200 results per request when details (work items, iterations...) are asked for.
+const RESULT_PAGE_SIZE_WITH_DETAILS = 200;
 const MAX_RESULT_PAGES = 200;
 // Results updated per request when linking a whole run to work items.
 const RESULT_UPDATE_BATCH_SIZE = 50;
@@ -702,14 +704,17 @@ export class TestExecutionService extends AzureDevOpsService {
   protected async getAllRunResults(runId: number, details?: ResultDetails): Promise<TestCaseResult[]> {
     const testApi = await this.getTestApi();
     const all: TestCaseResult[] = [];
+    // The page size has to match what the server will actually return: a request for more than the
+    // limit is rejected or silently cut short, and a short page would then look like the last one.
+    const pageSize = details ? RESULT_PAGE_SIZE_WITH_DETAILS : RESULT_PAGE_SIZE;
     for (let page = 0; page < MAX_RESULT_PAGES; page++) {
-      const batch = (await testApi.getTestResults(this.config.project, runId, details, all.length, RESULT_PAGE_SIZE)) || [];
+      const batch = (await testApi.getTestResults(this.config.project, runId, details, all.length, pageSize)) || [];
       all.push(...batch);
-      if (batch.length < RESULT_PAGE_SIZE) {
+      if (batch.length < pageSize) {
         return all;
       }
     }
-    throw new Error(`Test run ${runId} has more than ${MAX_RESULT_PAGES * RESULT_PAGE_SIZE} results; too many to read at once`);
+    throw new Error(`Test run ${runId} has more than ${MAX_RESULT_PAGES * pageSize} results; too many to read at once`);
   }
 
   // Tail of the queue of operations on each result, keyed "runId/resultId".
