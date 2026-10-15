@@ -66,6 +66,9 @@ import {
 
 // The test attachment API takes the file as a base64 string inside a JSON body.
 const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+// A shared step set as recorded on a result's reference row: which work item, at which revision.
+type SharedStepPin = { id: number; revision: number };
+
 // Runs looked up at the same time when enriching a history response.
 const RUN_LOOKUP_CONCURRENCY = 5;
 // Pages of test points read for one suite before giving up (Azure DevOps pages them).
@@ -733,7 +736,7 @@ export class TestExecutionService extends AzureDevOpsService {
    * the steps of the shared set, with paths and identifiers as the web UI records them
    * (child path = parent path + child path, identifier "parent;child").
    */
-  protected async expandSteps(stepsXml: string | undefined, sharedRevisions?: Map<number, number>): Promise<ParsedTestStep[]> {
+  protected async expandSteps(stepsXml: string | undefined, sharedPins?: Map<string, SharedStepPin>): Promise<ParsedTestStep[]> {
     const rows = parseTestSteps(stepsXml);
     if (!rows.some((r) => r.type === "SharedStepReference")) {
       return rows;
@@ -744,9 +747,13 @@ export class TestExecutionService extends AzureDevOpsService {
         expanded.push(row);
         continue;
       }
+      // Each reference row has its own pin, found by its action path: two references to the same
+      // set can have been recorded at different revisions. A pin recorded for a different set than
+      // the row now points at is not applied.
+      const pin = sharedPins?.get(row.actionPath);
       const shared = await this.getWorkItemAtRevision(
         row.sharedStepId!,
-        sharedRevisions?.get(row.sharedStepId!),
+        pin && pin.id === row.sharedStepId ? pin.revision : undefined,
         ["Microsoft.VSTS.TCM.Steps", "System.Title"]
       );
       expanded.push({
@@ -790,10 +797,10 @@ export class TestExecutionService extends AzureDevOpsService {
   protected async getTestCaseSteps(
     testCaseId: number,
     revision?: number,
-    sharedRevisions?: Map<number, number>
+    sharedPins?: Map<string, SharedStepPin>
   ): Promise<ParsedTestStep[]> {
     const workItem = await this.getWorkItemAtRevision(testCaseId, revision, ["Microsoft.VSTS.TCM.Steps"]);
-    return await this.expandSteps(workItem?.fields?.["Microsoft.VSTS.TCM.Steps"], sharedRevisions);
+    return await this.expandSteps(workItem?.fields?.["Microsoft.VSTS.TCM.Steps"], sharedPins);
   }
 
   /**
@@ -836,13 +843,15 @@ export class TestExecutionService extends AzureDevOpsService {
    */
   protected async getStepsForResult(result: TestCaseResult, iteration?: TestIterationDetailsModel): Promise<ParsedTestStep[]> {
     const recorded = iteration?.actionResults || [];
-    const sharedRevisions = new Map<number, number>();
+    // keyed by the reference row's action path, not by the shared set: the same set can be
+    // referenced twice, at different revisions
+    const sharedPins = new Map<string, SharedStepPin>();
     for (const a of recorded) {
-      if (a.sharedStepModel?.id && a.sharedStepModel.revision) {
-        sharedRevisions.set(a.sharedStepModel.id, a.sharedStepModel.revision);
+      if (a.actionPath && a.sharedStepModel?.id && a.sharedStepModel.revision) {
+        sharedPins.set(a.actionPath.toLowerCase(), { id: a.sharedStepModel.id, revision: a.sharedStepModel.revision });
       }
     }
-    return await this.getTestCaseSteps(Number(result.testCase?.id), result.testCaseRevision, sharedRevisions);
+    return await this.getTestCaseSteps(Number(result.testCase?.id), result.testCaseRevision, sharedPins);
   }
 
   /**

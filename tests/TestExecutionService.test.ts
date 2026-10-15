@@ -1015,6 +1015,72 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('two references to the same shared step set', () => {
+    // the test case uses set 49 twice (steps 2 and 3); the set was edited between the two recordings
+    const TWICE =
+      '<steps id="0" last="3"><compref id="2" ref="49" /><compref id="3" ref="49" /></steps>';
+    const setAt = (revision: number) =>
+      `<steps><step id="1" type="ActionStep"><parameterizedString>Sign in (r${revision})</parameterizedString></step></steps>`;
+    const model = (path: string, revision: number, id = 49) => ({ actionPath: path, outcome: 'Passed', sharedStepModel: { id, revision } });
+
+    beforeEach(() => {
+      witApi.getWorkItem.mockImplementation(async (id: number) =>
+        id === 49
+          ? { id: 49, rev: 9, fields: { 'System.Title': 'Login (latest)', 'Microsoft.VSTS.TCM.Steps': setAt(9) } }
+          : { id: 5, url: 'https://wi/5', rev: 3, fields: { 'Microsoft.VSTS.TCM.Steps': TWICE, 'System.Title': 'Save works' } });
+      witApi.getRevision = jest.fn().mockImplementation(async (id: number, rev: number) =>
+        id === 49
+          ? { id: 49, rev, fields: { 'System.Title': `Login (r${rev})`, 'Microsoft.VSTS.TCM.Steps': setAt(rev) } }
+          : { id: 5, rev, fields: { 'Microsoft.VSTS.TCM.Steps': TWICE } });
+    });
+    const actionOf = (out: { steps?: { stepId: number | string; action: string }[] }, stepId: number | string) =>
+      out.steps!.find((s) => s.stepId === stepId)!.action;
+
+    it('reads each reference at the revision recorded for that reference', async () => {
+      testApi.getTestResultById.mockResolvedValue({
+        ...resultWithIteration([model('00000002', 3), model('00000003', 5)]), testCaseRevision: 3
+      });
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+
+      expect(witApi.getRevision).toHaveBeenCalledWith(49, 3, undefined, 'Engineering');
+      expect(witApi.getRevision).toHaveBeenCalledWith(49, 5, undefined, 'Engineering');
+      expect(actionOf(out, 2)).toBe('Shared steps: Login (r3)');
+      expect(actionOf(out, '2;1')).toBe('Sign in (r3)');
+      expect(actionOf(out, 3)).toBe('Shared steps: Login (r5)');
+      expect(actionOf(out, '3;1')).toBe('Sign in (r5)');
+    });
+
+    it('uses the same pins when marking steps and when reporting a bug', async () => {
+      testApi.getTestResultById.mockResolvedValue({
+        ...resultWithIteration([model('00000002', 3), model('00000003', 5)]), testCaseRevision: 3
+      });
+      await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: '3;1', outcome: 'Failed', comment: 'broke' }] });
+      const written = testApi.updateTestResults.mock.calls[0][0][0].iterationDetails[0].actionResults as any[];
+      // the reference rows keep the revisions they were recorded at
+      expect(written.find((a) => a.actionPath === '00000002').sharedStepModel).toEqual({ id: 49, revision: 3 });
+      expect(written.find((a) => a.actionPath === '00000003').sharedStepModel).toEqual({ id: 49, revision: 5 });
+
+      await service.createBugFromTestRun({ runId: 77, resultId: 100000 });
+      const repro = witApi.createWorkItem.mock.calls[0][1].find((p: any) => p.path === '/fields/Microsoft.VSTS.TCM.ReproSteps').value as string;
+      expect(repro).toContain('Sign in (r3)');
+      expect(repro).toContain('Sign in (r5)');
+      expect(repro).not.toContain('Sign in (r9)');
+    });
+
+    it('reads a reference that has no recorded revision at the latest, while another keeps its own', async () => {
+      testApi.getTestResultById.mockResolvedValue({ ...resultWithIteration([model('00000002', 3)]), testCaseRevision: 3 });
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(actionOf(out, '2;1')).toBe('Sign in (r3)');
+      expect(actionOf(out, '3;1')).toBe('Sign in (r9)');
+    });
+
+    it('does not apply a revision that was recorded for a different shared set', async () => {
+      testApi.getTestResultById.mockResolvedValue({ ...resultWithIteration([model('00000002', 3, 777)]), testCaseRevision: 3 });
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(actionOf(out, '2;1')).toBe('Sign in (r9)'); // latest of set 49, not revision 3 of set 777
+    });
+  });
+
   describe('a test case whose steps field contains a commented-out step', () => {
     const WITH_COMMENT =
       '<steps id="0" last="99"><!-- <step id="99" type="ActionStep"><parameterizedString>old</parameterizedString></step> -->' +
