@@ -15,7 +15,7 @@ follows [Semantic Versioning](https://semver.org/).
   `setTestStepResults` (mark selected or all steps Passed/Failed with a comment),
   `setTestResultOutcome` (Passed, Failed, Paused, Blocked, NotApplicable), `addTestResultComment`,
   `addTestResultAttachment` (screenshots, recordings, files; per result or per step),
-  `addTestRunAttachment`, `updateTestResultAnalysis`, `assignTester`, `resetTestToActive`,
+  `addTestRunAttachment`, `updateTestResultAnalysis`, `listTestResolutionStates`, `assignTester`, `resetTestToActive`,
   `getTestRuns`, `getTestCaseExecutionHistory`, `linkTestRunToWorkItems`, `createBugFromTestRun`
   and `updateBugWithTestRun`.
 

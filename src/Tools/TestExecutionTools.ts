@@ -2,6 +2,7 @@ import { AzureDevOpsConfig } from "../Interfaces/AzureDevOps";
 import { TestExecutionService } from "../Services/TestExecutionService";
 import { formatMcpResponse, formatErrorResponse, McpResponse } from '../Interfaces/Common';
 import {
+  ListTestResolutionStatesParams,
   ListReleaseDefinitionsParams,
   GetReleaseDefinitionDetailsParams,
   StartTestRunParams,
@@ -126,6 +127,16 @@ export class TestExecutionTools {
       return formatMcpResponse(result, "Comment added to test result");
     } catch (error: unknown) {
       console.error('Error in addTestResultComment:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  async listTestResolutionStates(params: ListTestResolutionStatesParams): Promise<McpResponse> {
+    try {
+      const result = await this.service.listTestResolutionStates(params);
+      return formatMcpResponse(result, "Test resolution states");
+    } catch (error: unknown) {
+      console.error('Error in listTestResolutionStates:', error);
       return formatErrorResponse(error);
     }
   }

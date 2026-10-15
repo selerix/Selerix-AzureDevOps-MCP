@@ -2490,11 +2490,25 @@ async function main() {
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         failureType: z.enum(["None", "Regression", "New Issue", "Known Issue", "Unknown"]).optional(),
-        resolutionState: z.enum(["Needs Investigation", "Test Issue", "Product Issue", "Configuration Issue"]).optional().describe("Resolution; stored by id, a free-text value is ignored by Azure DevOps"),
+        resolutionState: z.string().optional().describe("Resolution name as listed by listTestResolutionStates (case-insensitive); they differ per project"),
+        resolutionStateId: z.number().optional().describe("Resolution state id; takes precedence over resolutionState"),
         comment: z.string().optional().describe("Analysis comment")
       },
       async (params, extra) => {
         const result = await testExecutionTools.updateTestResultAnalysis(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("listTestResolutionStates") && server.tool("listTestResolutionStates",
+      "List the project's test resolution states (id and name) that updateTestResultAnalysis accepts",
+      {},
+      async (params, extra) => {
+        const result = await testExecutionTools.listTestResolutionStates(params);
         return {
           content: result.content,
           rawData: result.rawData,

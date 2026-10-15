@@ -10,8 +10,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { Operation } from "azure-devops-node-api/interfaces/common/VSSInterfaces";
 import { WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces";
-import { TEST_RESOLUTION_STATE_IDS } from "../Interfaces/TestExecution";
 import {
+  ListTestResolutionStatesParams,
   CreateBugFromTestRunParams,
   UpdateBugWithTestRunParams,
   GetTestCaseExecutionHistoryParams,
@@ -650,16 +650,53 @@ export class TestExecutionService extends AzureDevOpsService {
     }
   }
 
+  /**
+   * List the project's test resolution states. Their ids and names are configured per project
+   * (not a fixed 1-4), and the results API stores a resolution by id, silently ignoring a name.
+   * The SDK has no client for this, so it reads the TCMServiceMigration/testresolutionstate route.
+   */
+  public async listTestResolutionStates(_params: ListTestResolutionStatesParams = {}) {
+    try {
+      const apiVersion = this.config.isOnPremises ? this.config.apiVersion || "5.0-preview.1" : "7.1-preview.1";
+      const url = `${this.webBaseUrl()}/_apis/TCMServiceMigration/testresolutionstate?api-version=${apiVersion}`;
+      const response = await this.connection.rest.get<{ value?: { id: number; name: string }[] }>(url);
+      if (response.statusCode !== 200 || !response.result?.value) {
+        throw new Error(
+          `Could not read the project's resolution states (HTTP ${response.statusCode}); pass resolutionStateId instead of resolutionState`
+        );
+      }
+      return response.result.value.map((s) => ({ id: s.id, name: s.name }));
+    } catch (error) {
+      console.error("Error listing test resolution states:", error);
+      throw error;
+    }
+  }
+
+  private async resolveResolutionStateId(name?: string, id?: number): Promise<number | undefined> {
+    if (id !== undefined) {
+      return id;
+    }
+    if (name === undefined) {
+      return undefined;
+    }
+    const states = await this.listTestResolutionStates();
+    const match = states.find((s) => s.name.toLowerCase() === name.trim().toLowerCase());
+    if (!match) {
+      throw new Error(`Unknown resolution state '${name}'. Available: ${states.map((s) => s.name).join(", ")}`);
+    }
+    return match.id;
+  }
+
   public async updateTestResultAnalysis(params: UpdateTestResultAnalysisParams) {
     try {
-      if (params.failureType === undefined && params.resolutionState === undefined && params.comment === undefined) {
-        throw new Error("Provide at least one of failureType, resolutionState, comment");
+      if (
+        params.failureType === undefined && params.resolutionState === undefined &&
+        params.resolutionStateId === undefined && params.comment === undefined
+      ) {
+        throw new Error("Provide at least one of failureType, resolutionState, resolutionStateId, comment");
       }
       const testApi = await this.getTestApi();
-      const resolutionStateId = params.resolutionState !== undefined ? TEST_RESOLUTION_STATE_IDS[params.resolutionState] : undefined;
-      if (params.resolutionState !== undefined && resolutionStateId === undefined) {
-        throw new Error(`resolutionState must be one of: ${Object.keys(TEST_RESOLUTION_STATE_IDS).join(", ")}`);
-      }
+      const resolutionStateId = await this.resolveResolutionStateId(params.resolutionState, params.resolutionStateId);
       await testApi.updateTestResults(
         [{ id: params.resultId, failureType: params.failureType, resolutionStateId, comment: params.comment }],
         this.config.project,

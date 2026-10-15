@@ -311,19 +311,51 @@ describe('TestExecutionService', () => {
       expect(testApi.updateTestResults.mock.calls[0][0][0].comment).toBe('only');
     });
 
-    it('updates the failure analysis, storing the resolution by id, and reads it back', async () => {
-      testApi.getTestResultById.mockResolvedValue({ id: 100000, failureType: 'Regression', resolutionState: 'Product Issue' });
-      const out = await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Regression', resolutionState: 'Product Issue' });
-      const sent = testApi.updateTestResults.mock.calls[0][0][0];
-      expect(sent).toEqual(expect.objectContaining({ id: 100000, failureType: 'Regression', resolutionStateId: 3 }));
-      expect(sent.resolutionState).toBeUndefined();
-      expect(out).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionState: 'Product Issue' }));
-    });
+    describe('resolution states', () => {
+      let restGet: jest.Mock;
+      beforeEach(() => {
+        restGet = jest.fn().mockResolvedValue({
+          statusCode: 200,
+          result: { value: [{ id: 9, name: 'Needs investigation' }, { id: 11, name: 'Product issue' }] }
+        });
+        (service as any).connection.rest = { get: restGet };
+      });
 
-    it('rejects an unknown resolution state', async () => {
-      await expect(
-        service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionState: 'Whatever' as any })
-      ).rejects.toThrow('resolutionState must be one of');
+      it('lists the project resolution states from the TCMServiceMigration route', async () => {
+        const states = await service.listTestResolutionStates();
+        expect(states).toEqual([{ id: 9, name: 'Needs investigation' }, { id: 11, name: 'Product issue' }]);
+        expect(restGet).toHaveBeenCalledWith(
+          'https://dev.azure.com/selerix/Engineering/_apis/TCMServiceMigration/testresolutionstate?api-version=7.1-preview.1'
+        );
+      });
+
+      it('stores the resolution by looked-up id (name match is case-insensitive) and reads the analysis back', async () => {
+        testApi.getTestResultById.mockResolvedValue({ id: 100000, failureType: 'Regression', resolutionState: 'Product issue' });
+        const out = await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, failureType: 'Regression', resolutionState: 'PRODUCT ISSUE' });
+        const sent = testApi.updateTestResults.mock.calls[0][0][0];
+        expect(sent).toEqual(expect.objectContaining({ id: 100000, failureType: 'Regression', resolutionStateId: 11 }));
+        expect(sent.resolutionState).toBeUndefined();
+        expect(out).toEqual(expect.objectContaining({ failureType: 'Regression', resolutionState: 'Product issue' }));
+      });
+
+      it('uses an explicit resolutionStateId without any lookup', async () => {
+        testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+        await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionStateId: 10 });
+        expect(restGet).not.toHaveBeenCalled();
+        expect(testApi.updateTestResults.mock.calls[0][0][0].resolutionStateId).toBe(10);
+      });
+
+      it('names the available states when the name is unknown', async () => {
+        await expect(
+          service.updateTestResultAnalysis({ runId: 77, resultId: 100000, resolutionState: 'Whatever' })
+        ).rejects.toThrow("Unknown resolution state 'Whatever'. Available: Needs investigation, Product issue");
+        expect(testApi.updateTestResults).not.toHaveBeenCalled();
+      });
+
+      it('fails clearly when the states cannot be read', async () => {
+        restGet.mockResolvedValue({ statusCode: 404, result: null });
+        await expect(service.listTestResolutionStates()).rejects.toThrow('pass resolutionStateId');
+      });
     });
 
     it('requires at least one analysis field', async () => {
