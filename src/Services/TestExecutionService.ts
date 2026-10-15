@@ -39,6 +39,7 @@ import {
   AddTestRunAttachmentParams,
   AssignTesterParams,
   AttachmentContentParams,
+  TesterIdentity,
   ResetTestToActiveParams,
   TestAttachmentKind,
   TestPointSelection,
@@ -97,6 +98,24 @@ function enumName(enumObject: object, value: number | undefined): string | undef
   const entries = Object.entries(enumObject as Record<string, string | number>);
   const name = entries.find(([key, v]) => typeof v === "number" && v === value && key !== "MaxValue")?.[0];
   return name ?? String(value);
+}
+
+/** True when two hyperlinks are the same, or point at the same test run (any view of it). */
+function sameRunLink(a: string | undefined, b: string): boolean {
+  if (!a) {
+    return false;
+  }
+  if (a === b) {
+    return true;
+  }
+  const runOf = (url: string) => /[?&]runId=(\d+)/i.exec(url)?.[1];
+  const runA = runOf(a);
+  return runA !== undefined && runA === runOf(b);
+}
+
+/** Union of bug ids from two sources, keeping order. */
+function mergeBugIds(known: number[] | undefined, refs: { id?: string }[] | undefined): number[] {
+  return [...new Set([...(known || []), ...(refs || []).map((b) => Number(b.id))])];
 }
 
 const toActionPath = (id: number) => id.toString(16).padStart(8, "0");
@@ -471,7 +490,7 @@ export class TestExecutionService extends AzureDevOpsService {
 
   protected async getResultWithIterations(runId: number, resultId: number) {
     const testApi = await this.getTestApi();
-    return await testApi.getTestResultById(this.config.project, runId, resultId, ResultDetails.Iterations);
+    return await testApi.getTestResultById(this.config.project, runId, resultId, ResultDetails.Iterations | ResultDetails.WorkItems);
   }
 
   public async getTestResult(params: GetTestResultParams) {
@@ -859,13 +878,38 @@ export class TestExecutionService extends AzureDevOpsService {
     };
   }
 
+  /**
+   * Azure DevOps only accepts a tester by identity GUID (anything else fails with a bare "Tester"
+   * error), so find the GUID of a name or email among the project's team members.
+   */
+  private async resolveTester(tester: TesterIdentity): Promise<{ id: string; uniqueName?: string; displayName?: string }> {
+    if (tester.id) {
+      return { id: tester.id, uniqueName: tester.uniqueName, displayName: tester.displayName };
+    }
+    const needle = (tester.uniqueName ?? tester.displayName)!.trim().toLowerCase();
+    const coreApi = await this.connection.getCoreApi();
+    const teams = await coreApi.getTeams(this.config.project, false, 100);
+    for (const team of teams || []) {
+      const members = await coreApi.getTeamMembersWithExtendedProperties(this.config.project, team.id!);
+      const match = (members || []).find(
+        (m) => m.identity?.uniqueName?.toLowerCase() === needle || m.identity?.displayName?.toLowerCase() === needle
+      );
+      if (match?.identity?.id) {
+        return { id: match.identity.id, uniqueName: match.identity.uniqueName, displayName: match.identity.displayName };
+      }
+    }
+    throw new Error(
+      `Could not find '${tester.uniqueName ?? tester.displayName}' among the members of the project's teams; pass the tester's identity GUID as tester.id`
+    );
+  }
+
   public async assignTester(params: AssignTesterParams) {
     try {
       const { id, uniqueName, displayName } = params.tester;
       if (!id && !uniqueName && !displayName) {
         throw new Error("tester needs an id, uniqueName or displayName");
       }
-      return await this.updatePoints(params, { tester: { id, uniqueName, displayName } });
+      return await this.updatePoints(params, { tester: await this.resolveTester(params.tester) });
     } catch (error) {
       console.error("Error assigning tester:", error);
       throw error;
@@ -937,24 +981,33 @@ export class TestExecutionService extends AzureDevOpsService {
     }
   }
 
-  /** Look up run names for a set of run ids; ids that can't be read are left out. */
-  protected async getRunNames(runIds: number[]): Promise<Map<number, string>> {
-    const names = new Map<number, string>();
+  /**
+   * Look up the name of each run and the bugs associated with its results. The results query
+   * returns neither (names blank, bugs empty), so both come from the run itself. Runs that can't
+   * be read are left out.
+   */
+  protected async getRunInfo(runIds: number[]): Promise<Map<number, { name?: string; bugs: Map<number, number[]> }>> {
+    const info = new Map<number, { name?: string; bugs: Map<number, number[]> }>();
     const distinct = [...new Set(runIds.filter((id) => Number.isFinite(id)))].slice(0, MAX_RUN_NAME_LOOKUPS);
     const testApi = await this.getTestApi();
     await Promise.all(
       distinct.map(async (id) => {
         try {
           const run = await testApi.getTestRunById(this.config.project, id);
-          if (run?.name) {
-            names.set(id, run.name);
+          const results = await testApi.getTestResults(this.config.project, id, ResultDetails.WorkItems);
+          const bugs = new Map<number, number[]>();
+          for (const r of results || []) {
+            if (r.id !== undefined && r.associatedBugs?.length) {
+              bugs.set(r.id, r.associatedBugs.map((b) => Number(b.id)));
+            }
           }
+          info.set(id, { name: run?.name || undefined, bugs });
         } catch {
-          // a run that can't be read just keeps no name
+          // a run that can't be read just keeps no name and no bugs
         }
       })
     );
-    return names;
+    return info;
   }
 
   /**
@@ -1027,7 +1080,7 @@ export class TestExecutionService extends AzureDevOpsService {
             );
             results.push(...(response?.results || []));
           }
-          const runNames = await this.getRunNames(results.map((r) => Number(r.testRun?.id)));
+          const runInfo = await this.getRunInfo(results.map((r) => Number(r.testRun?.id)));
           history = {};
           for (const r of results) {
             const pointId = Number(r.testPoint?.id);
@@ -1036,12 +1089,12 @@ export class TestExecutionService extends AzureDevOpsService {
             if (list.length >= top) continue;
             list.push({
               runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
-              runName: runNames.get(Number(r.testRun?.id)) || undefined,
+              runName: runInfo.get(Number(r.testRun?.id))?.name || undefined,
               resultId: r.id,
               outcome: r.outcome,
               runBy: r.runBy?.displayName,
               completedDate: r.completedDate,
-              associatedBugs: (r.associatedBugs || []).map((b) => Number(b.id)),
+              associatedBugs: mergeBugIds(runInfo.get(Number(r.testRun?.id))?.bugs.get(r.id!), r.associatedBugs),
             });
           }
         } catch (error) {
@@ -1079,13 +1132,13 @@ export class TestExecutionService extends AzureDevOpsService {
       );
       const results = response?.results || [];
       // The query leaves the run name blank, so look the names up.
-      const runNames = await this.getRunNames(results.map((r) => Number(r.testRun?.id)));
+      const runInfo = await this.getRunInfo(results.map((r) => Number(r.testRun?.id)));
       return {
         testCaseId: params.testCaseId,
         count: results.length,
         executions: results.map((r) => ({
           runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
-          runName: runNames.get(Number(r.testRun?.id)) || r.testRun?.name || undefined,
+          runName: runInfo.get(Number(r.testRun?.id))?.name || r.testRun?.name || undefined,
           testPointId: r.testPoint?.id ? Number(r.testPoint.id) : undefined,
           resultId: r.id,
           outcome: r.outcome,
@@ -1094,7 +1147,7 @@ export class TestExecutionService extends AzureDevOpsService {
           completedDate: r.completedDate,
           configuration: r.configuration?.name,
           build: r.build?.name,
-          associatedBugs: (r.associatedBugs || []).map((b) => Number(b.id)),
+          associatedBugs: mergeBugIds(runInfo.get(Number(r.testRun?.id))?.bugs.get(r.id!), r.associatedBugs),
         })),
       };
     } catch (error) {
@@ -1145,7 +1198,7 @@ export class TestExecutionService extends AzureDevOpsService {
   protected async addRunHyperlink(workItemId: number, url: string, comment: string): Promise<boolean> {
     const witApi = await this.getWorkItemTrackingApi();
     const workItem = await witApi.getWorkItem(workItemId, undefined, undefined, WorkItemExpand.Relations, this.config.project);
-    if ((workItem.relations || []).some((r) => r.rel === "Hyperlink" && r.url === url)) {
+    if ((workItem.relations || []).some((r) => r.rel === "Hyperlink" && sameRunLink(r.url, url))) {
       return false;
     }
     await witApi.updateWorkItem(
@@ -1188,7 +1241,7 @@ export class TestExecutionService extends AzureDevOpsService {
       const comment = r?.outcome === "Failed" && r.errorMessage ? `<br/><i>Comment:</i> ${e(r.errorMessage)}` : "";
       const expected = s.expectedResult ? `<br/><i>Expected:</i> ${e(s.expectedResult)}` : "";
       const indent = s.parentIdentifier ? "&nbsp;&nbsp;&nbsp;" : "";
-      return `<li>${indent}${e(s.action)}${mark}${expected}${comment}</li>`;
+      return `<li>${indent}<b>${e(s.identifier)}.</b> ${e(s.action)}${mark}${expected}${comment}</li>`;
     });
 
     const parts = [
@@ -1197,7 +1250,7 @@ export class TestExecutionService extends AzureDevOpsService {
         `<br/>Run: <a href="${e(resultUrl)}">${e(run.name || `Run ${runId}`)} (result ${resultId})</a></p>`,
       result.comment ? `<p><b>Result comment:</b> ${e(result.comment)}</p>` : "",
       result.errorMessage ? `<p><b>Error:</b> ${e(result.errorMessage)}</p>` : "",
-      stepRows.length ? `<p><b>Steps:</b></p><ol>${stepRows.join("")}</ol>` : "",
+      stepRows.length ? `<p><b>Steps:</b></p><ul>${stepRows.join("")}</ul>` : "",
       attachments.length
         ? `<p><b>Attachments:</b></p><ul>${attachments.map((a) => `<li><a href="${e(a.url || "")}">${e(a.fileName || String(a.id))}</a></li>`).join("")}</ul>`
         : "",
@@ -1273,7 +1326,9 @@ export class TestExecutionService extends AzureDevOpsService {
       }
       const existing = bug.relations || [];
       for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
-        if (!existing.some((r) => r.rel === relation.rel && r.url === relation.url)) {
+        const duplicate = existing.some((r) =>
+          r.rel === relation.rel && (relation.rel === "Hyperlink" ? sameRunLink(r.url, relation.url) : r.url === relation.url));
+        if (!duplicate) {
           patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
         }
       }

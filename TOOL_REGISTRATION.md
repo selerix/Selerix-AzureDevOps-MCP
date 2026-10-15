@@ -264,6 +264,7 @@ Notes:
   A shared step set is expanded into a reference row (step id `2`) plus one row per step inside it
   (step id `"2;1"`, `"2;2"`, ...). Marking the reference marks only that row; use `allStepsOutcome`
   or the `"parent;child"` ids to mark the steps inside it.
-- `assignTester` works best with the tester's identity GUID.
+- `assignTester` takes the tester's identity GUID. An email or display name is looked up among the
+  members of the project's teams (Azure DevOps itself rejects anything but a GUID).
 
 If you need to add more tools, make sure to implement them in the appropriate tools class first, and then register them in the `index.ts` file following the pattern shown above. 

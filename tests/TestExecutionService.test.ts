@@ -276,6 +276,14 @@ describe('TestExecutionService', () => {
   });
 
   describe('getTestResult', () => {
+    it('asks for the work item details so associated bugs are reported', async () => {
+      testApi.getTestResultById.mockResolvedValue({ ...resultWithIteration(), associatedBugs: [{ id: '23256' }] });
+      const out = await service.getTestResult({ runId: 77, resultId: 100000, includeSteps: false });
+      // Iterations (1) | WorkItems (2)
+      expect(testApi.getTestResultById).toHaveBeenCalledWith('Engineering', 77, 100000, 3);
+      expect(out.associatedBugs).toEqual([23256]);
+    });
+
     it('surfaces step outcomes recorded under a path no listed step maps to', async () => {
       testApi.getTestResultById.mockResolvedValue(
         resultWithIteration([
@@ -521,6 +529,44 @@ describe('TestExecutionService', () => {
       );
     });
 
+    describe('finding a tester by email or name', () => {
+      let coreApi: Record<string, jest.Mock>;
+      beforeEach(() => {
+        coreApi = {
+          getTeams: jest.fn().mockResolvedValue([{ id: 't1' }, { id: 't2' }]),
+          getTeamMembersWithExtendedProperties: jest.fn().mockImplementation(async (_p: string, team: string) =>
+            team === 't1'
+              ? [{ identity: { id: 'guid-1', uniqueName: 'sam@selerix.com', displayName: 'Sam Other' } }]
+              : [{ identity: { id: 'guid-9', uniqueName: 'Pat.Tester@selerix.com', displayName: 'Pat Tester' } }])
+        };
+        (service as any).connection.getCoreApi = jest.fn().mockResolvedValue(coreApi);
+      });
+
+      it('resolves an email to the identity GUID across the project teams', async () => {
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'pat.tester@selerix.com' } });
+        expect(testApi.updateTestPoints).toHaveBeenCalledWith(
+          { tester: { id: 'guid-9', uniqueName: 'Pat.Tester@selerix.com', displayName: 'Pat Tester' } }, 'Engineering', 1, 20, '9'
+        );
+      });
+
+      it('resolves a display name too', async () => {
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { displayName: 'pat tester' } });
+        expect(testApi.updateTestPoints.mock.calls[0][0].tester.id).toBe('guid-9');
+      });
+
+      it('does not search when a GUID is given', async () => {
+        await service.assignTester({ planId: 1, testCaseIds: [5], tester: { id: 'guid-1' } });
+        expect(coreApi.getTeams).not.toHaveBeenCalled();
+      });
+
+      it('fails clearly, without touching the points, when nobody matches', async () => {
+        await expect(
+          service.assignTester({ planId: 1, testCaseIds: [5], tester: { uniqueName: 'nobody@selerix.com' } })
+        ).rejects.toThrow("Could not find 'nobody@selerix.com'");
+        expect(testApi.updateTestPoints).not.toHaveBeenCalled();
+      });
+    });
+
     it('requires a tester identity', async () => {
       await expect(service.assignTester({ planId: 1, testCaseIds: [5], tester: {} })).rejects.toThrow('tester needs');
     });
@@ -543,6 +589,27 @@ describe('TestExecutionService', () => {
 
       expect(testApi.updateTestResults.mock.calls[0][0]).toEqual([{ id: 100000, associatedBugs: [{ id: '11' }, { id: '12' }] }]);
       expect(witApi.updateWorkItem.mock.calls[0][1][0].value).toEqual(expect.objectContaining({ rel: 'Hyperlink', url: 'https://run/77' }));
+      expect(out.hyperlinked).toEqual([12]);
+    });
+
+    it('treats a link to another view of the same run as the same hyperlink', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+      witApi.getWorkItem.mockResolvedValue({
+        relations: [{ rel: 'Hyperlink', url: 'https://dev.azure.com/selerix/Engineering/_testManagement/runs?runId=77&_a=resultSummary&resultId=100000' }]
+      });
+      testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'run', webAccessUrl: 'https://dev.azure.com/selerix/Engineering/_TestManagement/Runs?runId=77&_a=runCharts' });
+      const out = await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+      expect(witApi.updateWorkItem).not.toHaveBeenCalled();
+      expect(out.hyperlinked).toEqual([]);
+    });
+
+    it('still adds a hyperlink for a different run', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+      witApi.getWorkItem.mockResolvedValue({
+        relations: [{ rel: 'Hyperlink', url: 'https://dev.azure.com/selerix/Engineering/_TestManagement/Runs?runId=770&_a=runCharts' }]
+      });
+      testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'run', webAccessUrl: 'https://dev.azure.com/selerix/Engineering/_TestManagement/Runs?runId=77&_a=runCharts' });
+      const out = await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
       expect(out.hyperlinked).toEqual([12]);
     });
 
@@ -581,7 +648,7 @@ describe('TestExecutionService', () => {
       expect(field('System.AreaPath')).toBe('Eng\\Area');
       expect(field('Microsoft.VSTS.Common.Severity')).toBe('2 - High');
       const repro = field('Microsoft.VSTS.TCM.ReproSteps');
-      expect(repro).toContain('Click save <b>[FAILED]</b>');
+      expect(repro).toContain('<b>3.</b> Click save <b>[FAILED]</b>');
       expect(repro).toContain('Save button &lt;missing&gt;');
       expect(repro).toContain('shot.png');
       const rels = patch.filter((p: any) => p.path === '/relations/-').map((p: any) => p.value);
@@ -695,6 +762,16 @@ describe('TestExecutionService', () => {
       testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'Reports (Manual)' });
       const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
       expect(out.executions[0]).toEqual(expect.objectContaining({ runName: 'Reports (Manual)', testPointId: 9 }));
+    });
+
+    it('reports the bugs associated with each result, which the results query leaves out', async () => {
+      testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
+        results: [{ id: 100000, outcome: 'Failed', testPoint: { id: '9' }, testRun: { id: '77' }, associatedBugs: [] }]
+      });
+      testApi.getTestResults.mockResolvedValue([{ id: 100000, associatedBugs: [{ id: '23256' }] }]);
+      const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+      expect(testApi.getTestResults).toHaveBeenCalledWith('Engineering', 77, 2);
+      expect(out.executions[0].associatedBugs).toEqual([23256]);
     });
 
     it('maps test case execution history', async () => {

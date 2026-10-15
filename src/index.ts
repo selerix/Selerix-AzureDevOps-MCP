@@ -2525,7 +2525,7 @@ async function main() {
         suiteId: z.number().optional().describe("Suite containing the test cases; looked up within the plan when omitted"),
         tester: z.object({
           id: z.string().optional().describe("Identity GUID (preferred)"),
-          uniqueName: z.string().optional().describe("Account/email"),
+          uniqueName: z.string().optional().describe("Account/email; looked up among the project teams' members when id is omitted"),
           displayName: z.string().optional()
         }).describe("Tester identity")
       },
