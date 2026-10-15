@@ -55,6 +55,12 @@ export interface AzureDevOpsConfig {
   apiVersion?: string; // API version for on-premises
   auth?: AzureDevOpsAuthConfig; // Updated to use the new union type
   entraAuthHandler?: EntraAuthHandler;
+  /**
+   * Folders the test execution tools may read attachments from and save them to. When not set, the
+   * working directory and the system temp folder; ["*"] lifts the folder limit. Credential and key
+   * files are refused either way.
+   */
+  fileAccessDirs?: string[];
 }
 
 /**

@@ -9,11 +9,13 @@ import { ProjectTools } from './Tools/ProjectTools';
 import { GitTools } from './Tools/GitTools';
 import { TestingCapabilitiesTools } from './Tools/TestingCapabilitiesTools';
 import { TestPlansTools } from './Tools/TestPlansTools';
+import { TestExecutionTools } from './Tools/TestExecutionTools';
 import { DevSecOpsTools } from './Tools/DevSecOpsTools';
 import { ArtifactManagementTools } from './Tools/ArtifactManagementTools';
 import { AIAssistedDevelopmentTools } from './Tools/AIAssistedDevelopmentTools';
 import { PipelinesTools } from './Tools/PipelinesTools';
 import { z } from 'zod';
+import { idSchema, limitSchema, prioritySchema, stepRefSchema } from './utils/toolSchemas';
 import { EntraAuthHandler } from './Services/EntraAuthHandler';
 import { HTML_FORMAT_FIELD_WARNING, HTML_FORMAT_FIELD_PARAM_NOTE } from './utils/richTextFields';
 
@@ -39,6 +41,7 @@ async function main() {
     const gitTools = new GitTools(azureDevOpsConfig);
     const testingCapabilitiesTools = new TestingCapabilitiesTools(azureDevOpsConfig);
     const testPlansTools = new TestPlansTools(azureDevOpsConfig);
+    const testExecutionTools = new TestExecutionTools(azureDevOpsConfig);
     const devSecOpsTools = new DevSecOpsTools(azureDevOpsConfig);
     const artifactManagementTools = new ArtifactManagementTools(azureDevOpsConfig);
     const aiAssistedDevelopmentTools = new AIAssistedDevelopmentTools(azureDevOpsConfig);
@@ -973,7 +976,7 @@ async function main() {
     
     // Register Testing Capabilities Tools
     allowedTools.has("runAutomatedTests") && server.tool("runAutomatedTests", 
-      "Execute automated test suites",
+      "DEPRECATED placeholder: does not start a real run and returns a fixed run id. Use startTestRun instead.",
       {
         testSuiteId: z.number().optional().describe("ID of the test suite to run"),
         testPlanId: z.number().optional().describe("ID of the test plan to run"),
@@ -991,7 +994,7 @@ async function main() {
     );
     
     allowedTools.has("getTestAutomationStatus") && server.tool("getTestAutomationStatus", 
-      "Check status of automated test execution",
+      "Check the state and pass/fail counts of a test run (see also getTestRuns)",
       {
         testRunId: z.number().describe("ID of the test run to check status for")
       },
@@ -2282,6 +2285,445 @@ async function main() {
       },
       async (params, extra) => {
         const result = await pipelinesTools.associateAutomatedTestWithTestCase(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    // Register Test Execution Tools
+    allowedTools.has("listReleaseDefinitions") && server.tool("listReleaseDefinitions",
+      "List release pipelines (classic releases) so one can be chosen for an automated test run",
+      {
+        searchText: z.string().optional().describe("Filter release pipelines by name"),
+        top: limitSchema(1000).optional().describe("Maximum number to return")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.listReleaseDefinitions(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getReleaseDefinitionDetails") && server.tool("getReleaseDefinitionDetails",
+      "Get a release pipeline's stages and build artifacts, to choose the stage and artifact for an automated test run",
+      {
+        releaseDefinitionId: idSchema.describe("ID of the release pipeline")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getReleaseDefinitionDetails(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("startTestRun") && server.tool("startTestRun",
+      "Trigger a test run for one or more test cases. testType 'manual' + runner 'webApplication' creates an in-progress run whose steps and outcome are then recorded with setTestStepResults/setTestResultOutcome. testType 'automated' + runner 'releaseStage' creates a release from the chosen build and deploys only the chosen stage (requires buildPipelineId, releasePipelineId, stageName).",
+      {
+        planId: idSchema.describe("ID of the test plan"),
+        testCaseIds: z.array(idSchema).min(1).describe("Test case work item IDs"),
+        suiteId: idSchema.optional().describe("Suite containing the test cases; looked up within the plan when omitted"),
+        testType: z.enum(["manual", "automated"]).describe("Type of test run"),
+        runner: z.enum(["webApplication", "releaseStage"]).describe("webApplication for manual runs; releaseStage for automated runs"),
+        runName: z.string().optional().describe("Name of the test run"),
+        buildPipelineId: idSchema.optional().describe("Automated only: build pipeline that produced the tests"),
+        buildId: idSchema.optional().describe("Automated only: build id (takes precedence over buildNumber)"),
+        buildNumber: z.string().optional().describe("Automated only: build number such as '20261015.1'; latest completed build is used when neither buildId nor buildNumber is given"),
+        releasePipelineId: idSchema.optional().describe("Automated only: release pipeline to run the tests in (see listReleaseDefinitions)"),
+        stageName: z.string().optional().describe("Automated only: release pipeline stage to deploy and run (see getReleaseDefinitionDetails)"),
+        artifactAlias: z.string().optional().describe("Automated only: alias of the release artifact bound to the build; must be a Build artifact of buildPipelineId. Inferred from buildPipelineId when omitted and only one artifact matches"),
+        runIdVariableName: z.string().optional().describe("Automated only: release variable that receives the test run id (default 'test.RunId')")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.startTestRun(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestResult") && server.tool("getTestResult",
+      "Read a test result: outcome, comment, failure analysis, associated bugs, attachments, and the test case steps with any recorded step outcomes",
+      {
+        iterationId: idSchema.optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        includeSteps: z.boolean().optional().describe("Include steps with recorded outcomes (default true)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getTestResult(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("setTestStepResults") && server.tool("setTestStepResults",
+      "Mark selected steps (or all steps) of a test result as Passed or Failed, optionally with a comment on a failing step",
+      {
+        iterationId: idSchema.optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        steps: z.array(z.object({
+          stepId: stepRefSchema.describe("Step id as shown by getTestResult: a number, or '3;5' for step 5 inside the shared step set at step 3"),
+          outcome: z.enum(["Passed", "Failed"]),
+          comment: z.string().optional().describe("Comment for the step, e.g. why it failed")
+        })).optional().describe("Selected steps to mark"),
+        allStepsOutcome: z.enum(["Passed", "Failed"]).optional().describe("Mark every step with this outcome (explicit steps entries still win)"),
+        allStepsComment: z.string().optional().describe("Comment applied to every step marked through allStepsOutcome")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.setTestStepResults(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("setTestResultOutcome") && server.tool("setTestResultOutcome",
+      "Mark the whole test result as Passed, Failed, Paused, Blocked or NotApplicable",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        outcome: z.enum(["Passed", "Failed", "Paused", "Blocked", "NotApplicable"]),
+        comment: z.string().optional().describe("Comment for the result")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.setTestResultOutcome(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("completeTestRun") && server.tool("completeTestRun",
+      "Complete a test run (state Completed) once its results are recorded",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        comment: z.string().optional().describe("Run comment")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.completeTestRun(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("addTestResultAttachment") && server.tool("addTestResultAttachment",
+      "Upload a screenshot, screen recording or other file (from a local path) to a test result, or to one of its steps. Capturing the screen is the caller's job; this uploads the file.",
+      {
+        iterationId: idSchema.optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        filePath: z.string().optional().describe("Absolute path of the local file to upload; must be inside an allowed folder (the working directory, the temp folder, or AZURE_DEVOPS_FILE_ACCESS_DIRS) and not a credential or key file"),
+        base64Content: z.string().optional().describe("Base64 content for data with no file, rejected above 1 KB decoded; use filePath for anything larger (requires fileName)"),
+        fileName: z.string().optional().describe("File name; defaults to the file's own name"),
+        comment: z.string().optional().describe("Comment stored with the attachment"),
+        kind: z.enum(["screenshot", "recording", "file"]).optional().describe("Validates the file type: screenshot = image, recording = video"),
+        stepId: stepRefSchema.optional().describe("Attach to this step instead of the whole result (number, or '3;5' for a step inside a shared step set)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.addTestResultAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("addTestRunAttachment") && server.tool("addTestRunAttachment",
+      "Upload a file to a test run (as opposed to a single result)",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        filePath: z.string().optional().describe("Absolute path of the local file to upload; must be inside an allowed folder (the working directory, the temp folder, or AZURE_DEVOPS_FILE_ACCESS_DIRS) and not a credential or key file"),
+        base64Content: z.string().optional().describe("Base64 content for data with no file, rejected above 1 KB decoded; use filePath for anything larger (requires fileName)"),
+        fileName: z.string().optional().describe("File name; defaults to the file's own name"),
+        comment: z.string().optional().describe("Comment stored with the attachment")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.addTestRunAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("listTestRunAttachments") && server.tool("listTestRunAttachments",
+      "List the files attached to a test run (id, file name, size, comment, date)",
+      {
+        runId: idSchema.describe("ID of the test run")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.listTestRunAttachments(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestRunAttachment") && server.tool("getTestRunAttachment",
+      "Download a test run attachment to a file (savePath), or return small ones inline as base64. savePath must be inside an allowed folder, and an existing file is not replaced unless overwrite is true. Get the attachment id from listTestRunAttachments.",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        attachmentId: idSchema.describe("ID of the attachment (from listTestRunAttachments)"),
+        savePath: z.string().optional().describe("File to write to, or an existing folder (the file is then saved as '<attachment id>-<its name, made safe>'); must be inside an allowed folder. Without it the content comes back as base64 if it is under 64 KB"),
+        overwrite: z.boolean().optional().describe("Replace a file that already exists at savePath (default false)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getTestRunAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("deleteTestRunAttachment") && server.tool("deleteTestRunAttachment",
+      "Permanently delete one attachment of a test run. This cannot be undone. Get the attachment id from listTestRunAttachments.",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        attachmentId: idSchema.describe("ID of the attachment to delete (from listTestRunAttachments)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.deleteTestRunAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("addTestResultComment") && server.tool("addTestResultComment",
+      "Add a comment to a test result (appended to the existing comment unless replace is true)",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        comment: z.string().describe("Comment text"),
+        replace: z.boolean().optional().describe("Replace the existing comment instead of appending")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.addTestResultComment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("updateTestResultAnalysis") && server.tool("updateTestResultAnalysis",
+      "Edit the analysis of a test result: analysis owner, failure type, resolution and comment",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        failureType: z.enum(["None", "Regression", "New Issue", "Known Issue", "Unknown"]).optional(),
+        resolutionState: z.string().optional().describe("Resolution name as listed by listTestResolutionStates (case-insensitive); they differ per project"),
+        resolutionStateId: idSchema.optional().describe("Resolution state id; takes precedence over resolutionState"),
+        analysisOwner: z.object({
+          id: z.string().optional().describe("Identity GUID (preferred)"),
+          uniqueName: z.string().optional().describe("Account/email; looked up among the project teams' members when id is omitted"),
+          displayName: z.string().optional().describe("Display name; looked up among the project teams' members when id is omitted")
+        }).optional().describe("Analysis owner"),
+        comment: z.string().optional().describe("Analysis comment; this is the result's comment field, so it replaces the existing result comment")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.updateTestResultAnalysis(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("listTestResolutionStates") && server.tool("listTestResolutionStates",
+      "List the project's test resolution states (id and name) that updateTestResultAnalysis accepts",
+      {},
+      async (params, extra) => {
+        const result = await testExecutionTools.listTestResolutionStates(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("assignTester") && server.tool("assignTester",
+      "Assign a tester to the test points of the given test cases in a plan",
+      {
+        planId: idSchema.describe("ID of the test plan"),
+        testCaseIds: z.array(idSchema).min(1).describe("Test case work item IDs"),
+        suiteId: idSchema.optional().describe("Suite containing the test cases; looked up within the plan when omitted"),
+        tester: z.object({
+          id: z.string().optional().describe("Identity GUID (preferred)"),
+          uniqueName: z.string().optional().describe("Account/email; looked up among the project teams' members when id is omitted"),
+          displayName: z.string().optional()
+        }).describe("Tester identity")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.assignTester(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("resetTestToActive") && server.tool("resetTestToActive",
+      "Reset the test points of the given test cases in a plan back to Active so they can be run again",
+      {
+        planId: idSchema.describe("ID of the test plan"),
+        testCaseIds: z.array(idSchema).min(1).describe("Test case work item IDs"),
+        suiteId: idSchema.optional().describe("Suite containing the test cases; looked up within the plan when omitted")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.resetTestToActive(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestRuns") && server.tool("getTestRuns",
+      "List test runs (filter by plan, build, owner, automated) or, with runId, read one run and its results",
+      {
+        runId: idSchema.optional().describe("Return this single run with its results"),
+        planId: idSchema.optional(),
+        buildId: idSchema.optional(),
+        owner: z.string().optional().describe("Run owner display name or unique name"),
+        automated: z.boolean().optional(),
+        top: limitSchema(1000).optional().describe("Maximum runs to return (default 25)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getTestRuns(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestPoints") && server.tool("getTestPoints",
+      "Read test points (test case + configuration pairs in a suite): current outcome, tester, last run and result, last reset to Active, optionally with recent results per point. Give testCaseIds, a suiteId, or both.",
+      {
+        planId: idSchema.describe("ID of the test plan"),
+        suiteId: idSchema.optional().describe("Suite to read; every point in it when testCaseIds is omitted"),
+        testCaseIds: z.array(idSchema).optional().describe("Only the points of these test cases; their suites are looked up in the plan when suiteId is omitted"),
+        includeHistory: z.boolean().optional().describe("Also return recent results recorded against each point"),
+        historyTop: limitSchema(200).optional().describe("Results per point when includeHistory is set (default 10)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getTestPoints(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestCaseExecutionHistory") && server.tool("getTestCaseExecutionHistory",
+      "Find the runs and results recorded for a test case, newest first",
+      {
+        testCaseId: idSchema.describe("Test case work item ID"),
+        planId: idSchema.optional().describe("Limit to this test plan"),
+        top: limitSchema(1000).optional().describe("Maximum results to return (default 25)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getTestCaseExecutionHistory(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("linkTestRunToWorkItems") && server.tool("linkTestRunToWorkItems",
+      "Link a test run (or one of its results) to existing work items. Bugs are recorded as the result's associated bugs; other work item types (User Story, Task, PBI...) get only a hyperlink to the run, which every work item gets",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.optional().describe("Link only this result; every result in the run when omitted"),
+        workItemIds: z.array(idSchema).min(1).describe("Work item IDs to link"),
+        addRunHyperlink: z.boolean().optional().describe("Also add a hyperlink to the run on each work item (default true)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.linkTestRunToWorkItems(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("createBugFromTestRun") && server.tool("createBugFromTestRun",
+      "Create a Bug from a test result, with repro steps built from the test steps, outcomes, failing-step comments and attachments, linked to the test result, test case and run",
+      {
+        iterationId: idSchema.optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        title: z.string().optional().describe("Bug title; defaults to '<test case title> failed'"),
+        areaPath: z.string().optional().describe("Defaults to the test case's area path"),
+        iterationPath: z.string().optional().describe("Defaults to the test case's iteration path"),
+        assignedTo: z.string().optional(),
+        severity: z.string().optional().describe("e.g. '2 - High'"),
+        priority: prioritySchema.optional(),
+        additionalDetails: z.string().optional().describe("Extra text placed above the generated repro steps")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.createBugFromTestRun(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("updateBugWithTestRun") && server.tool("updateBugWithTestRun",
+      "Add a test result's details to an existing bug as a comment (and optionally append to Repro Steps), and link the bug to the result, test case and run",
+      {
+        iterationId: idSchema.optional().describe("Iteration (data row) of a parameterised result, as listed in getTestResult's iterations; not needed with one iteration. Without it, reads and bug reports use the first failing iteration, and changes refuse to guess"),
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
+        bugId: idSchema.describe("ID of the existing bug"),
+        additionalDetails: z.string().optional().describe("Extra text placed above the generated summary"),
+        appendToReproSteps: z.boolean().optional().describe("Also append the details to the bug's Repro Steps field (default false)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.updateBugWithTestRun(params);
         return {
           content: result.content,
           rawData: result.rawData,

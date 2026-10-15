@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { AzureDevOpsConfig } from './Interfaces/AzureDevOps';
+import { parseAllowedDirs } from './utils/fileAccess';
 import { AIAssistedDevelopmentToolMethods } from './Tools/AIAssistedDevelopmentTools';
 import { ArtifactManagementToolMethods } from './Tools/ArtifactManagementTools';
 import { BoardsSprintsToolMethods } from './Tools/BoardsSprintsTools';
@@ -11,6 +12,7 @@ import { PipelinesToolMethods } from './Tools/PipelinesTools';
 import { ProjectToolMethods } from './Tools/ProjectTools';
 import { TestingCapabilitiesToolMethods } from './Tools/TestingCapabilitiesTools';
 import { TestPlansToolMethods } from './Tools/TestPlansTools';
+import { TestExecutionToolMethods } from './Tools/TestExecutionTools';
 import { WorkItemToolMethods } from './Tools/WorkItemTools';
 
 // Try to load environment variables from .env file with multiple possible locations
@@ -60,6 +62,7 @@ export function getAzureDevOpsConfig(): AzureDevOpsConfig {
   const isOnPremises = process.env.AZURE_DEVOPS_IS_ON_PREMISES === 'true';
   const collection = process.env.AZURE_DEVOPS_COLLECTION;
   const apiVersion = process.env.AZURE_DEVOPS_API_VERSION;
+  const fileAccessDirs = parseAllowedDirs(process.env.AZURE_DEVOPS_FILE_ACCESS_DIRS);
   
   // Basic validation
   if (!orgUrl || !project) {
@@ -150,6 +153,7 @@ export function getAzureDevOpsConfig(): AzureDevOpsConfig {
     isOnPremises,
     collection,
     apiVersion,
+    ...(fileAccessDirs && { fileAccessDirs }),
     ...(auth && { auth })
   };
 }
@@ -163,6 +167,7 @@ const ALL_ALLOWED_TOOLS = AIAssistedDevelopmentToolMethods
   .concat(ProjectToolMethods)
   .concat(TestingCapabilitiesToolMethods)
   .concat(TestPlansToolMethods)
+  .concat(TestExecutionToolMethods)
   .concat(WorkItemToolMethods);
 
 /**

@@ -43,6 +43,9 @@ startCommand:
       AZURE_DEVOPS_DOMAIN:
         type: string
         description: Domain for NTLM authentication
+      AZURE_DEVOPS_FILE_ACCESS_DIRS:
+        type: string
+        description: Optional folders the test execution tools may read attachments from and save them to, separated like PATH (';' on Windows, ':' elsewhere). Defaults to the working directory and the system temp folder; '*' lifts the folder limit. Credential and key files are always refused.
       ALLOWED_TOOLS:
         type: string
         description: Optional comma-separated list of tool methods to enable (e.g., 'listWorkItems,getWorkItemById'). If not specified, all tools will be available.
@@ -59,6 +62,7 @@ startCommand:
         AZURE_DEVOPS_IS_ON_PREMISES: config.AZURE_DEVOPS_IS_ON_PREMISES,
         AZURE_DEVOPS_COLLECTION: config.AZURE_DEVOPS_COLLECTION,
         AZURE_DEVOPS_API_VERSION: config.AZURE_DEVOPS_API_VERSION,
+        AZURE_DEVOPS_FILE_ACCESS_DIRS: config.AZURE_DEVOPS_FILE_ACCESS_DIRS,
         AZURE_DEVOPS_AUTH_TYPE: config.AZURE_DEVOPS_AUTH_TYPE,
         AZURE_DEVOPS_USERNAME: config.AZURE_DEVOPS_USERNAME,
         AZURE_DEVOPS_PASSWORD: config.AZURE_DEVOPS_PASSWORD,
