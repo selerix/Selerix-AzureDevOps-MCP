@@ -150,6 +150,26 @@ describe('parseTestSteps', () => {
       expect(textOf('&lt;div&gt;One&lt;br/&gt;Two&lt;/div&gt;&lt;p&gt;Three&lt;/p&gt;')).toBe('One\nTwo\nThree');
     });
 
+    describe('comparison operators and other angle brackets that are not tags', () => {
+      it.each([
+        ['a comparison in CDATA', '<![CDATA[Check 1 < 2 and 3 > 2]]>', 'Check 1 < 2 and 3 > 2'],
+        ['a comparison with no spaces', '<![CDATA[Check a<2 and b>1]]>', 'Check a<2 and b>1'],
+        ['arrows', '<![CDATA[Go A -> B <- C]]>', 'Go A -> B <- C'],
+        ['a comparison next to a real tag', '<![CDATA[Total <b>5</b> > 3]]>', 'Total 5 > 3'],
+        ['a lone greater-than after a tag', '<![CDATA[<div>x</div> y > z]]>', 'x\n y > z'],
+        ['a properly escaped comparison', 'Check 1 &amp;lt; 2 and 3 &amp;gt; 2', 'Check 1 < 2 and 3 > 2'],
+        ['a comparison written as references', 'Check 1 &#60; 2 and 3 &#62; 2', 'Check 1 < 2 and 3 > 2'],
+        ['an HTML comment', '<![CDATA[visible<!-- hidden -->text]]>', 'visibletext'],
+        ['a tag with attributes', '<![CDATA[<a href="x?a=1&b=2">link</a> 2 > 1]]>', 'link 2 > 1']
+      ])('keeps %s', (_label, inner, expected) => {
+        expect(textOf(inner)).toBe(expected);
+      });
+
+      it('still removes ordinary tags', () => {
+        expect(textOf('&lt;div&gt;&lt;p class=&quot;x&quot;&gt;Click &lt;b&gt;save&lt;/b&gt;&lt;/p&gt;&lt;/div&gt;')).toBe('Click save');
+      });
+    });
+
     it('reads the expected result the same way', () => {
       const [step] = parseTestSteps(
         '<steps><step id="1" type="ValidateStep"><parameterizedString>Do</parameterizedString><parameterizedString><![CDATA[It &lt;works&gt;]]></parameterizedString></step></steps>'

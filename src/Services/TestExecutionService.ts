@@ -143,7 +143,14 @@ function decodeXmlText(value: string): string {
  * text "<b>" instead of being mistaken for a tag.
  */
 function htmlToPlainText(html: string): string {
-  const withoutTags = html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(div|p|li|tr)>/gi, "\n").replace(/<[^>]+>/g, "");
+  // A tag is "<" or "</" followed by a letter, up to the next ">" with no "<" in between, as in
+  // HTML itself. A "<" followed by a space, a digit or a symbol is just a character, so text such as
+  // "Check 1 < 2 and 3 > 2" or "A -> B <- C" is kept as written instead of being cut up.
+  const withoutTags = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(div|p|li|tr)>/gi, "\n")
+    .replace(/<\/?[a-zA-Z][^<>]*>/g, "");
   return decodeReferences(withoutTags, true).replace(/\u00a0/g, " ").replace(/\n{2,}/g, "\n").trim();
 }
 
