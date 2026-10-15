@@ -1129,6 +1129,31 @@ describe('TestExecutionService', () => {
       expect(out.bugId).toBe(900);
     });
 
+    describe('when linking fails after the work item was changed', () => {
+      // preserving a name-only resolution needs a route that can be unavailable; here the update itself fails
+      beforeEach(() => {
+        testApi.updateTestResults.mockRejectedValue(new Error('resolution-state route unavailable'));
+      });
+
+      it('creating a bug reports the new bug id and says not to create it again', async () => {
+        await expect(service.createBugFromTestRun({ runId: 77, resultId: 100000 })).rejects.toThrow(
+          /Bug 900 was created \(https:\/\/wi\/900\) but could not be linked to test result 77\/100000: resolution-state route unavailable\. Do not create the bug again; retry linkTestRunToWorkItems with runId 77, resultId 100000 and workItemIds \[900\]/
+        );
+        expect(witApi.createWorkItem).toHaveBeenCalledTimes(1);
+      });
+
+      it('updating a bug says it was updated and not to repeat the update', async () => {
+        witApi.getWorkItem.mockImplementation(async (id: number) =>
+          id === 700
+            ? { id: 700, fields: {}, relations: [] }
+            : { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': STEPS_XML, 'System.Title': 'Save works' } });
+        await expect(service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 })).rejects.toThrow(
+          /Bug 700 was updated with test result 77\/100000 but the result could not be linked to it: resolution-state route unavailable\. Do not call updateBugWithTestRun again/
+        );
+        expect(witApi.updateWorkItem).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('comments on an existing bug without duplicating links it already has', async () => {
       witApi.getWorkItem.mockImplementation(async (id: number) =>
         id === 700

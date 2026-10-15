@@ -1676,8 +1676,19 @@ export class TestExecutionService extends AzureDevOpsService {
       ];
       const bug = await witApi.createWorkItem(undefined, patch, this.config.project, "Bug");
 
-      await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [bug.id!], addRunHyperlink: false });
-      return { bugId: bug.id, title: fields["System.Title"], url: bug._links?.html?.href ?? bug.url, runId: params.runId, resultId: params.resultId };
+      const url = bug._links?.html?.href ?? bug.url;
+      try {
+        await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [bug.id!], addRunHyperlink: false });
+      } catch (error) {
+        // The bug exists now. Reporting only the linking error would hide its id, and creating the
+        // bug again to retry would leave a duplicate.
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Bug ${bug.id} was created (${url}) but could not be linked to test result ${params.runId}/${params.resultId}: ${reason}. ` +
+            `Do not create the bug again; retry linkTestRunToWorkItems with runId ${params.runId}, resultId ${params.resultId} and workItemIds [${bug.id}].`
+        );
+      }
+      return { bugId: bug.id, title: fields["System.Title"], url, runId: params.runId, resultId: params.resultId };
     } catch (error) {
       console.error(`Error creating bug from test result ${params.runId}/${params.resultId}:`, error);
       throw error;
@@ -1707,7 +1718,17 @@ export class TestExecutionService extends AzureDevOpsService {
       }
       await witApi.updateWorkItem(undefined, patch, params.bugId, this.config.project);
 
-      await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false });
+      try {
+        await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false });
+      } catch (error) {
+        // The bug has already been updated. Calling this tool again would add the comment twice.
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Bug ${params.bugId} was updated with test result ${params.runId}/${params.resultId} but the result could not be linked to it: ${reason}. ` +
+            `Do not call updateBugWithTestRun again (it would repeat the comment); retry linkTestRunToWorkItems with runId ${params.runId}, ` +
+            `resultId ${params.resultId} and workItemIds [${params.bugId}].`
+        );
+      }
       return { bugId: params.bugId, runId: params.runId, resultId: params.resultId, appendedToReproSteps: !!params.appendToReproSteps };
     } catch (error) {
       console.error(`Error updating bug ${params.bugId} with test result ${params.runId}/${params.resultId}:`, error);
