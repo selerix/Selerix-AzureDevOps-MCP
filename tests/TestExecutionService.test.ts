@@ -284,6 +284,82 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('steps as they were when the result was run', () => {
+    // The test case was edited after the run: revision 3 had steps 2 and 3, the latest has "Latest only" too.
+    const OLD_STEPS = STEPS_XML;
+    const LATEST_STEPS = STEPS_XML.replace('</steps>',
+      '<step id="4" type="ActionStep"><parameterizedString isformatted="true">Latest only</parameterizedString><parameterizedString isformatted="true"></parameterizedString><description/></step></steps>');
+    const ranAtRevision = (extra: Record<string, unknown> = {}, actionResults: unknown[] = []) =>
+      ({ ...resultWithIteration(actionResults), testCaseRevision: 3, ...extra });
+
+    beforeEach(() => {
+      witApi.getWorkItem.mockResolvedValue({ id: 5, url: 'https://wi/5', rev: 5, fields: { 'Microsoft.VSTS.TCM.Steps': LATEST_STEPS, 'System.Title': 'Save works' } });
+      witApi.getRevision = jest.fn().mockResolvedValue({ id: 5, rev: 3, fields: { 'Microsoft.VSTS.TCM.Steps': OLD_STEPS } });
+    });
+
+    it('shows a result against the test case revision it recorded, not the latest', async () => {
+      testApi.getTestResultById.mockResolvedValue(ranAtRevision());
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(witApi.getRevision).toHaveBeenCalledWith(5, 3, undefined, 'Engineering');
+      expect(out.steps!.map((s) => s.stepId)).toEqual([2, 3]);
+    });
+
+    it('marks steps against that revision, so a step added later is not recognised', async () => {
+      testApi.getTestResultById.mockResolvedValue(ranAtRevision());
+      await expect(
+        service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 4, outcome: 'Passed' }] })
+      ).rejects.toThrow('Step 4 not found');
+      await service.setTestStepResults({ runId: 77, resultId: 100000, steps: [{ stepId: 3, outcome: 'Passed' }] });
+      expect(testApi.updateTestResults).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves a step attachment against that revision', async () => {
+      testApi.getTestResultById.mockResolvedValue(ranAtRevision());
+      await service.addTestResultAttachment({ runId: 77, resultId: 100000, base64Content: 'aGk=', fileName: 'x.txt', stepId: 3 });
+      expect(testApi.createTestIterationResultAttachment).toHaveBeenCalledWith(expect.anything(), 'Engineering', 77, 100000, 1, '00000003');
+    });
+
+    it('builds the bug repro steps from that revision', async () => {
+      testApi.getTestResultById.mockResolvedValue(ranAtRevision({}, [{ actionPath: '00000003', outcome: 'Failed', errorMessage: 'broke' }]));
+      await service.createBugFromTestRun({ runId: 77, resultId: 100000 });
+      const repro = witApi.createWorkItem.mock.calls[0][1].find((p: any) => p.path === '/fields/Microsoft.VSTS.TCM.ReproSteps').value;
+      expect(repro).toContain('Click save');
+      expect(repro).not.toContain('Latest only');
+    });
+
+    it('uses the latest steps when the result recorded no revision', async () => {
+      testApi.getTestResultById.mockResolvedValue(resultWithIteration());
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(witApi.getRevision).not.toHaveBeenCalled();
+      expect(out.steps!.map((s) => s.stepId)).toEqual([2, 3, 4]);
+    });
+
+    it('falls back to the latest steps when the revision cannot be read', async () => {
+      witApi.getRevision.mockRejectedValue(new Error('revision not found'));
+      testApi.getTestResultById.mockResolvedValue(ranAtRevision());
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(out.steps!.map((s) => s.stepId)).toEqual([2, 3, 4]);
+    });
+
+    it('reads each shared step set at the revision recorded on its reference row', async () => {
+      witApi.getRevision.mockImplementation(async (id: number, rev: number) =>
+        id === 5
+          ? { id: 5, rev: 3, fields: { 'Microsoft.VSTS.TCM.Steps': SHARED_STEPS_XML } }
+          : { id: 49, rev, fields: { 'System.Title': 'Login (old)', 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML } });
+      witApi.getWorkItem.mockImplementation(async (id: number) =>
+        id === 49
+          ? { id: 49, rev: 9, fields: { 'System.Title': 'Login (new)', 'Microsoft.VSTS.TCM.Steps': SHARED_SET_XML.replace('Sign in', 'Sign in with SSO') } }
+          : { id: 5, rev: 5, fields: { 'Microsoft.VSTS.TCM.Steps': SHARED_STEPS_XML } });
+      testApi.getTestResultById.mockResolvedValue(
+        ranAtRevision({}, [{ actionPath: '00000002', outcome: 'Passed', sharedStepModel: { id: 49, revision: 2 } }])
+      );
+      const out = await service.getTestResult({ runId: 77, resultId: 100000 });
+      expect(witApi.getRevision).toHaveBeenCalledWith(49, 2, undefined, 'Engineering');
+      expect(out.steps![1].action).toBe('Shared steps: Login (old)');
+      expect(out.steps!.find((s) => s.stepId === '2;2')!.action).toBe('Sign in');
+    });
+  });
+
   describe('shared steps', () => {
     beforeEach(() => {
       witApi.getWorkItem.mockImplementation(async (id: number) =>

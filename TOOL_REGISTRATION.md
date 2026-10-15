@@ -266,6 +266,10 @@ Notes:
   A shared step set is expanded into a reference row (step id `2`) plus one row per step inside it
   (step id `"2;1"`, `"2;2"`, ...). Marking the reference marks only that row; use `allStepsOutcome`
   or the `"parent;child"` ids to mark the steps inside it.
+- A result is shown against the steps it was run against: the test case at the revision the result
+  recorded, and each shared step set at the revision recorded on its reference row. A test case
+  edited after a run therefore does not change how older results read. A result with no recorded
+  revision, or a revision that cannot be read, uses the latest steps.
 - `assignTester` takes the tester's identity GUID. An email or display name is looked up among the
   members of the project's teams (Azure DevOps itself rejects anything but a GUID).
 - **Corporate TLS inspection (Zscaler) blocks some of these tools.** `deleteTestRunAttachment` goes

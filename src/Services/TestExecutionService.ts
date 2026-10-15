@@ -527,24 +527,21 @@ export class TestExecutionService extends AzureDevOpsService {
    * the steps of the shared set, with paths and identifiers as the web UI records them
    * (child path = parent path + child path, identifier "parent;child").
    */
-  protected async expandSteps(stepsXml: string | undefined): Promise<ParsedTestStep[]> {
+  protected async expandSteps(stepsXml: string | undefined, sharedRevisions?: Map<number, number>): Promise<ParsedTestStep[]> {
     const rows = parseTestSteps(stepsXml);
     if (!rows.some((r) => r.type === "SharedStepReference")) {
       return rows;
     }
-    const witApi = await this.getWorkItemTrackingApi();
     const expanded: ParsedTestStep[] = [];
     for (const row of rows) {
       if (row.type !== "SharedStepReference") {
         expanded.push(row);
         continue;
       }
-      const shared = await witApi.getWorkItem(
+      const shared = await this.getWorkItemAtRevision(
         row.sharedStepId!,
-        ["Microsoft.VSTS.TCM.Steps", "System.Title"],
-        undefined,
-        undefined,
-        this.config.project
+        sharedRevisions?.get(row.sharedStepId!),
+        ["Microsoft.VSTS.TCM.Steps", "System.Title"]
       );
       expanded.push({
         ...row,
@@ -567,11 +564,47 @@ export class TestExecutionService extends AzureDevOpsService {
     return expanded;
   }
 
-  /** Fetch a test case's steps (shared steps expanded) from its work item. */
-  protected async getTestCaseSteps(testCaseId: number): Promise<ParsedTestStep[]> {
+  /**
+   * Read a work item as it was at a revision, so a result is shown against the steps that were
+   * actually run. Falls back to the latest version when no revision is known or it can't be read.
+   */
+  protected async getWorkItemAtRevision(id: number, revision: number | undefined, fields: string[]) {
     const witApi = await this.getWorkItemTrackingApi();
-    const workItem = await witApi.getWorkItem(testCaseId, ["Microsoft.VSTS.TCM.Steps"], undefined, undefined, this.config.project);
-    return await this.expandSteps(workItem?.fields?.["Microsoft.VSTS.TCM.Steps"]);
+    if (revision) {
+      try {
+        return await witApi.getRevision(id, revision, undefined, this.config.project);
+      } catch {
+        // an unreadable revision falls back to the latest
+      }
+    }
+    return await witApi.getWorkItem(id, fields, undefined, undefined, this.config.project);
+  }
+
+  /** Fetch a test case's steps (shared steps expanded), at a revision when one is given. */
+  protected async getTestCaseSteps(
+    testCaseId: number,
+    revision?: number,
+    sharedRevisions?: Map<number, number>
+  ): Promise<ParsedTestStep[]> {
+    const workItem = await this.getWorkItemAtRevision(testCaseId, revision, ["Microsoft.VSTS.TCM.Steps"]);
+    return await this.expandSteps(workItem?.fields?.["Microsoft.VSTS.TCM.Steps"], sharedRevisions);
+  }
+
+  /**
+   * The steps a result was run against: its test case at the revision it recorded, with each
+   * shared step set at the revision recorded on the reference row. A test case or shared set
+   * edited after the run would otherwise show outcomes against instructions never executed, and
+   * step updates and attachments could resolve to the wrong step.
+   */
+  protected async getStepsForResult(result: TestCaseResult): Promise<ParsedTestStep[]> {
+    const recorded = result.iterationDetails?.[0]?.actionResults || [];
+    const sharedRevisions = new Map<number, number>();
+    for (const a of recorded) {
+      if (a.sharedStepModel?.id && a.sharedStepModel.revision) {
+        sharedRevisions.set(a.sharedStepModel.id, a.sharedStepModel.revision);
+      }
+    }
+    return await this.getTestCaseSteps(Number(result.testCase?.id), result.testCaseRevision, sharedRevisions);
   }
 
   protected async getResultWithIterations(runId: number, resultId: number) {
@@ -590,7 +623,7 @@ export class TestExecutionService extends AzureDevOpsService {
       if (params.includeSteps !== false && result.testCase?.id) {
         const actionResults = result.iterationDetails?.[0]?.actionResults || [];
         const recorded = new Map(actionResults.map((a) => [a.actionPath?.toLowerCase(), a]));
-        const testCaseSteps = await this.getTestCaseSteps(Number(result.testCase.id));
+        const testCaseSteps = await this.getStepsForResult(result);
         // Outcomes recorded under a path no listed step maps to (e.g. shared-step children, or
         // another client's path format) would otherwise be silently invisible here.
         const knownPaths = new Set(testCaseSteps.map((s) => s.actionPath));
@@ -644,7 +677,7 @@ export class TestExecutionService extends AzureDevOpsService {
       if (!result.testCase?.id) {
         throw new Error(`Result ${params.resultId} has no test case`);
       }
-      const steps = await this.getTestCaseSteps(Number(result.testCase.id));
+      const steps = await this.getStepsForResult(result);
       const byId = new Map(steps.map((s) => [s.identifier, s]));
 
       const updates = new Map<string, { outcome: string; comment?: string }>();
@@ -807,7 +840,7 @@ export class TestExecutionService extends AzureDevOpsService {
       let reference;
       if (params.stepId !== undefined) {
         const result = await this.getResultWithIterations(params.runId, params.resultId);
-        const step = (await this.getTestCaseSteps(Number(result.testCase?.id))).find((s) => s.identifier === String(params.stepId));
+        const step = (await this.getStepsForResult(result)).find((s) => s.identifier === String(params.stepId));
         if (!step) {
           throw new Error(`Step ${params.stepId} not found on test case ${result.testCase?.id}`);
         }
@@ -1405,7 +1438,7 @@ export class TestExecutionService extends AzureDevOpsService {
       throw new Error(`Result ${resultId} in run ${runId} has no test case`);
     }
     const testCase = await witApi.getWorkItem(testCaseId, undefined, undefined, undefined, this.config.project);
-    const steps = await this.expandSteps(testCase.fields?.["Microsoft.VSTS.TCM.Steps"]);
+    const steps = await this.getStepsForResult(result);
     const recorded = new Map((result.iterationDetails?.[0]?.actionResults || []).map((a) => [a.actionPath?.toLowerCase(), a]));
 
     const title = result.testCaseTitle || testCase.fields?.["System.Title"] || `Test case ${testCaseId}`;
