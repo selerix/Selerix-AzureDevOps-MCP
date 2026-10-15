@@ -100,6 +100,63 @@ export interface CompleteTestRunParams {
   comment?: string;
 }
 
+/** Kind of file being attached; ADO stores all of them as general attachments. */
+export type TestAttachmentKind = "screenshot" | "recording" | "file";
+
+export interface AttachmentContentParams {
+  /** Local file to upload (a screenshot or screen recording captured by the caller, or any file) */
+  filePath?: string;
+  /** Alternative to filePath for small content; requires fileName */
+  base64Content?: string;
+  fileName?: string;
+  comment?: string;
+}
+
+export interface AddTestResultAttachmentParams extends TestResultRef, AttachmentContentParams {
+  kind?: TestAttachmentKind;
+  /** Attach to a single step instead of the whole result */
+  stepId?: number;
+}
+
+export interface AddTestRunAttachmentParams extends AttachmentContentParams {
+  runId: number;
+}
+
+export interface AddTestResultCommentParams extends TestResultRef {
+  comment: string;
+  /** Replace the existing result comment instead of appending to it (default false) */
+  replace?: boolean;
+}
+
+export type TestFailureType = "None" | "Regression" | "New Issue" | "Known Issue" | "Unknown" | "Other";
+
+export interface UpdateTestResultAnalysisParams extends TestResultRef {
+  failureType?: TestFailureType;
+  /** Resolution, e.g. "Needs Investigation", "Product Issue", "Test Issue" (configured per project) */
+  resolutionState?: string;
+  comment?: string;
+}
+
+export interface TesterIdentity {
+  /** Identity GUID (preferred) */
+  id?: string;
+  uniqueName?: string;
+  displayName?: string;
+}
+
+export interface TestPointSelection {
+  planId: number;
+  testCaseIds: number[];
+  /** Looked up per test case within the plan when omitted */
+  suiteId?: number;
+}
+
+export interface AssignTesterParams extends TestPointSelection {
+  tester: TesterIdentity;
+}
+
+export type ResetTestToActiveParams = TestPointSelection;
+
 export interface StartedTestResult {
   resultId: number;
   testCaseId?: number;

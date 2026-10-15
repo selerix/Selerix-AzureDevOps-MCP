@@ -6,8 +6,24 @@ import { IReleaseApi } from "azure-devops-node-api/ReleaseApi";
 import { IBuildApi } from "azure-devops-node-api/BuildApi";
 import { BuildQueryOrder, BuildStatus } from "azure-devops-node-api/interfaces/BuildInterfaces";
 import { EnvironmentStatus } from "azure-devops-node-api/interfaces/ReleaseInterfaces";
-import { ResultDetails, TestActionResultModel } from "azure-devops-node-api/interfaces/TestInterfaces";
+import * as fs from "fs";
+import * as path from "path";
 import {
+  PointUpdateModel,
+  ResultDetails,
+  TestActionResultModel,
+  TestAttachmentRequestModel,
+} from "azure-devops-node-api/interfaces/TestInterfaces";
+import {
+  AddTestResultAttachmentParams,
+  AddTestResultCommentParams,
+  AddTestRunAttachmentParams,
+  AssignTesterParams,
+  AttachmentContentParams,
+  ResetTestToActiveParams,
+  TestAttachmentKind,
+  TestPointSelection,
+  UpdateTestResultAnalysisParams,
   CompleteTestRunParams,
   GetReleaseDefinitionDetailsParams,
   GetTestResultParams,
@@ -19,6 +35,11 @@ import {
   StartedTestResult,
   StartTestRunParams,
 } from "../Interfaces/TestExecution";
+
+// The test attachment API takes the file as a base64 string inside a JSON body.
+const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
+const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
 
 const HTML_ENTITIES: Record<string, string> = {
   "&lt;": "<",
@@ -513,6 +534,162 @@ export class TestExecutionService extends AzureDevOpsService {
       return { runId: run.id, state: run.state, totalTests: run.totalTests, passedTests: run.passedTests };
     } catch (error) {
       console.error(`Error completing test run ${params.runId}:`, error);
+      throw error;
+    }
+  }
+
+  private buildAttachmentRequest(params: AttachmentContentParams, kind?: TestAttachmentKind): TestAttachmentRequestModel {
+    if (params.filePath && params.base64Content) {
+      throw new Error("Provide either filePath or base64Content, not both.");
+    }
+    let stream: string;
+    let fileName: string;
+    if (params.filePath) {
+      if (!fs.existsSync(params.filePath)) {
+        throw new Error(`File not found: ${params.filePath}`);
+      }
+      const size = fs.statSync(params.filePath).size;
+      if (size > MAX_TEST_ATTACHMENT_BYTES) {
+        throw new Error(`File is ${Math.round(size / 1048576)} MB; the limit is ${MAX_TEST_ATTACHMENT_BYTES / 1048576} MB`);
+      }
+      stream = fs.readFileSync(params.filePath).toString("base64");
+      fileName = params.fileName || path.basename(params.filePath);
+    } else if (params.base64Content) {
+      if (!params.fileName) {
+        throw new Error("fileName is required when uploading via base64Content.");
+      }
+      stream = params.base64Content;
+      fileName = params.fileName;
+    } else {
+      throw new Error("Provide filePath or base64Content.");
+    }
+
+    const ext = path.extname(fileName).toLowerCase();
+    if (kind === "screenshot" && !IMAGE_EXTENSIONS.includes(ext)) {
+      throw new Error(`A screenshot must be an image (${IMAGE_EXTENSIONS.join(", ")}), got '${ext || fileName}'`);
+    }
+    if (kind === "recording" && !VIDEO_EXTENSIONS.includes(ext)) {
+      throw new Error(`A recording must be a video (${VIDEO_EXTENSIONS.join(", ")}), got '${ext || fileName}'`);
+    }
+    return { attachmentType: "GeneralAttachment", comment: params.comment, fileName, stream };
+  }
+
+  public async addTestResultAttachment(params: AddTestResultAttachmentParams) {
+    try {
+      const request = this.buildAttachmentRequest(params, params.kind);
+      const testApi = await this.getTestApi();
+      let reference;
+      if (params.stepId !== undefined) {
+        const result = await this.getResultWithIterations(params.runId, params.resultId);
+        const step = (await this.getTestCaseSteps(Number(result.testCase?.id))).find((s) => s.id === params.stepId);
+        if (!step) {
+          throw new Error(`Step ${params.stepId} not found on test case ${result.testCase?.id}`);
+        }
+        reference = await testApi.createTestIterationResultAttachment(
+          request, this.config.project, params.runId, params.resultId, result.iterationDetails?.[0]?.id ?? 1, step.actionPath
+        );
+      } else {
+        reference = await testApi.createTestResultAttachment(request, this.config.project, params.runId, params.resultId);
+      }
+      return { runId: params.runId, resultId: params.resultId, stepId: params.stepId, fileName: request.fileName, attachment: reference };
+    } catch (error) {
+      console.error(`Error adding attachment to result ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
+  public async addTestRunAttachment(params: AddTestRunAttachmentParams) {
+    try {
+      const request = this.buildAttachmentRequest(params);
+      const testApi = await this.getTestApi();
+      const reference = await testApi.createTestRunAttachment(request, this.config.project, params.runId);
+      return { runId: params.runId, fileName: request.fileName, attachment: reference };
+    } catch (error) {
+      console.error(`Error adding attachment to run ${params.runId}:`, error);
+      throw error;
+    }
+  }
+
+  public async addTestResultComment(params: AddTestResultCommentParams) {
+    try {
+      const testApi = await this.getTestApi();
+      let comment = params.comment;
+      if (!params.replace) {
+        const existing = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
+        comment = existing.comment ? `${existing.comment}\n${params.comment}` : params.comment;
+      }
+      const updated = await testApi.updateTestResults([{ id: params.resultId, comment }], this.config.project, params.runId);
+      return { runId: params.runId, resultId: params.resultId, comment: updated?.[0]?.comment ?? comment };
+    } catch (error) {
+      console.error(`Error commenting on result ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
+  public async updateTestResultAnalysis(params: UpdateTestResultAnalysisParams) {
+    try {
+      if (params.failureType === undefined && params.resolutionState === undefined && params.comment === undefined) {
+        throw new Error("Provide at least one of failureType, resolutionState, comment");
+      }
+      const testApi = await this.getTestApi();
+      const updated = await testApi.updateTestResults(
+        [{ id: params.resultId, failureType: params.failureType, resolutionState: params.resolutionState, comment: params.comment }],
+        this.config.project,
+        params.runId
+      );
+      const r = updated?.[0];
+      return { runId: params.runId, resultId: params.resultId, failureType: r?.failureType, resolutionState: r?.resolutionState, comment: r?.comment };
+    } catch (error) {
+      console.error(`Error updating analysis for ${params.runId}/${params.resultId}:`, error);
+      throw error;
+    }
+  }
+
+  /** Apply a point update per suite, since the points API is scoped to a suite. */
+  private async updatePoints(selection: TestPointSelection, update: PointUpdateModel) {
+    const { points, unresolvedTestCaseIds } = await this.resolveTestPoints(selection.planId, selection.testCaseIds, selection.suiteId);
+    if (points.length === 0) {
+      throw new Error(`No test points found in plan ${selection.planId} for test cases ${selection.testCaseIds.join(", ")}`);
+    }
+    const testApi = await this.getTestApi();
+    const bySuite = new Map<number, number[]>();
+    for (const p of points) {
+      bySuite.set(p.suiteId!, [...(bySuite.get(p.suiteId!) || []), p.pointId]);
+    }
+    const updated = [];
+    for (const [suiteId, pointIds] of bySuite) {
+      updated.push(...(await testApi.updateTestPoints(update, this.config.project, selection.planId, suiteId, pointIds.join(","))));
+    }
+    return {
+      updatedPoints: updated.map((p) => ({
+        pointId: p.id,
+        testCaseId: p.testCase?.id ? Number(p.testCase.id) : undefined,
+        tester: p.assignedTo?.displayName,
+        outcome: p.outcome,
+        state: p.state,
+      })),
+      unresolvedTestCaseIds,
+    };
+  }
+
+  public async assignTester(params: AssignTesterParams) {
+    try {
+      const { id, uniqueName, displayName } = params.tester;
+      if (!id && !uniqueName && !displayName) {
+        throw new Error("tester needs an id, uniqueName or displayName");
+      }
+      return await this.updatePoints(params, { tester: { id, uniqueName, displayName } });
+    } catch (error) {
+      console.error("Error assigning tester:", error);
+      throw error;
+    }
+  }
+
+  public async resetTestToActive(params: ResetTestToActiveParams) {
+    try {
+      return await this.updatePoints(params, { resetToActive: true });
+    } catch (error) {
+      console.error("Error resetting tests to active:", error);
       throw error;
     }
   }
