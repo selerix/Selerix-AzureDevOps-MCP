@@ -435,7 +435,20 @@ export class TestExecutionService extends AzureDevOpsService {
         release = await this.startReleaseStage(run.id!, releasePlan!);
       }
 
-      const results = automated ? [] : await this.getAllRunResults(run.id!);
+      let results: TestCaseResult[] = [];
+      if (!automated) {
+        try {
+          results = await this.getAllRunResults(run.id!);
+        } catch (error) {
+          // The run exists now. Reporting only this error would hide its id, and starting again to
+          // retry would leave a second run behind.
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Test run ${run.id} was created but its results could not be read: ${reason}. ` +
+              `Do not start the run again; read its results with getTestRuns (runId ${run.id}).`
+          );
+        }
+      }
       const pointsByCase = new Map<number, number[]>();
       for (const p of points) {
         pointsByCase.set(p.testCaseId, [...(pointsByCase.get(p.testCaseId) || []), p.pointId]);

@@ -433,6 +433,18 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('a manual run whose results cannot be read after it was created', () => {
+    it('names the new run and says not to start it again', async () => {
+      testApi.getTestResults.mockRejectedValue(new Error('service unavailable'));
+      await expect(
+        service.startTestRun({ testCaseIds: [5], planId: 1, suiteId: 20, testType: 'manual', runner: 'webApplication' })
+      ).rejects.toThrow(
+        'Test run 77 was created but its results could not be read: service unavailable. Do not start the run again; read its results with getTestRuns (runId 77).'
+      );
+      expect(testApi.createTestRun).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('runs with more results than one page', () => {
     // results come back 500 at a time (skip/top)
     const results = (from: number, count: number) =>
