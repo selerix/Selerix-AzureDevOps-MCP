@@ -2466,6 +2466,54 @@ async function main() {
       }
     );
 
+    allowedTools.has("listTestRunAttachments") && server.tool("listTestRunAttachments",
+      "List the files attached to a test run (id, file name, size, comment, date)",
+      {
+        runId: z.number().describe("ID of the test run")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.listTestRunAttachments(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("getTestRunAttachment") && server.tool("getTestRunAttachment",
+      "Download a test run attachment to a file (savePath), or return small ones inline as base64. Get the attachment id from listTestRunAttachments.",
+      {
+        runId: z.number().describe("ID of the test run"),
+        attachmentId: z.number().describe("ID of the attachment (from listTestRunAttachments)"),
+        savePath: z.string().optional().describe("File to write to, or an existing folder (the attachment's own file name is used); without it the content comes back as base64 if it is under 64 KB")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getTestRunAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
+    allowedTools.has("deleteTestRunAttachment") && server.tool("deleteTestRunAttachment",
+      "Permanently delete one attachment of a test run. This cannot be undone. Get the attachment id from listTestRunAttachments.",
+      {
+        runId: z.number().describe("ID of the test run"),
+        attachmentId: z.number().describe("ID of the attachment to delete (from listTestRunAttachments)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.deleteTestRunAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     allowedTools.has("addTestResultComment") && server.tool("addTestResultComment",
       "Add a comment to a test result (appended to the existing comment unless replace is true)",
       {
@@ -2485,13 +2533,18 @@ async function main() {
     );
 
     allowedTools.has("updateTestResultAnalysis") && server.tool("updateTestResultAnalysis",
-      "Edit the analysis of a test result: failure type, resolution and comment",
+      "Edit the analysis of a test result: analysis owner, failure type, resolution and comment",
       {
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().describe("ID of the test result within the run (from startTestRun or getTestRuns)"),
         failureType: z.enum(["None", "Regression", "New Issue", "Known Issue", "Unknown"]).optional(),
         resolutionState: z.string().optional().describe("Resolution name as listed by listTestResolutionStates (case-insensitive); they differ per project"),
         resolutionStateId: z.number().optional().describe("Resolution state id; takes precedence over resolutionState"),
+        analysisOwner: z.object({
+          id: z.string().optional().describe("Identity GUID (preferred)"),
+          uniqueName: z.string().optional().describe("Account/email; looked up among the project teams' members when id is omitted"),
+          displayName: z.string().optional().describe("Display name; looked up among the project teams' members when id is omitted")
+        }).optional().describe("Analysis owner"),
         comment: z.string().optional().describe("Analysis comment; this is the result's comment field, so it replaces the existing result comment")
       },
       async (params, extra) => {

@@ -150,6 +150,11 @@ export interface UpdateTestResultAnalysisParams extends TestResultRef {
   resolutionState?: string;
   /** Resolution state id; takes precedence over resolutionState */
   resolutionStateId?: number;
+  /**
+   * Analysis owner. An id is used as is; an email or display name is looked up among the members
+   * of the project's teams.
+   */
+  analysisOwner?: TesterIdentity;
   comment?: string;
 }
 
@@ -242,4 +247,20 @@ export interface GetTestPointsParams {
   includeHistory?: boolean;
   /** Results per point when includeHistory is set (default 10) */
   historyTop?: number;
+}
+
+export interface ListTestRunAttachmentsParams {
+  runId: number;
+}
+
+export interface GetTestRunAttachmentParams {
+  runId: number;
+  attachmentId: number;
+  /** File (or existing folder) to write the attachment to; without it the content is returned as base64 if it is small */
+  savePath?: string;
+}
+
+export interface DeleteTestRunAttachmentParams {
+  runId: number;
+  attachmentId: number;
 }

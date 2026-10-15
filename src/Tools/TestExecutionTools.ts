@@ -2,6 +2,9 @@ import { AzureDevOpsConfig } from "../Interfaces/AzureDevOps";
 import { TestExecutionService } from "../Services/TestExecutionService";
 import { formatMcpResponse, formatErrorResponse, McpResponse } from '../Interfaces/Common';
 import {
+  ListTestRunAttachmentsParams,
+  GetTestRunAttachmentParams,
+  DeleteTestRunAttachmentParams,
   GetTestPointsParams,
   ListTestResolutionStatesParams,
   ListReleaseDefinitionsParams,
@@ -118,6 +121,36 @@ export class TestExecutionTools {
       return formatMcpResponse(result, "Attachment added to test run");
     } catch (error: unknown) {
       console.error('Error in addTestRunAttachment:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  async listTestRunAttachments(params: ListTestRunAttachmentsParams): Promise<McpResponse> {
+    try {
+      const result = await this.service.listTestRunAttachments(params);
+      return formatMcpResponse(result, "Test run attachments");
+    } catch (error: unknown) {
+      console.error('Error in listTestRunAttachments:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  async getTestRunAttachment(params: GetTestRunAttachmentParams): Promise<McpResponse> {
+    try {
+      const result = await this.service.getTestRunAttachment(params);
+      return formatMcpResponse(result, "Test run attachment");
+    } catch (error: unknown) {
+      console.error('Error in getTestRunAttachment:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  async deleteTestRunAttachment(params: DeleteTestRunAttachmentParams): Promise<McpResponse> {
+    try {
+      const result = await this.service.deleteTestRunAttachment(params);
+      return formatMcpResponse(result, "Test run attachment deleted");
+    } catch (error: unknown) {
+      console.error('Error in deleteTestRunAttachment:', error);
       return formatErrorResponse(error);
     }
   }

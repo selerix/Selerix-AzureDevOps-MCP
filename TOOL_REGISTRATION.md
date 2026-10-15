@@ -247,7 +247,9 @@ Run test cases, record results, and file bugs (`src/Services/TestExecutionServic
 
 - Run: `startTestRun`, `completeTestRun`, `listReleaseDefinitions`, `getReleaseDefinitionDetails`
 - Record: `getTestResult`, `setTestStepResults`, `setTestResultOutcome`, `addTestResultComment`,
-  `addTestResultAttachment`, `addTestRunAttachment`, `updateTestResultAnalysis`, `listTestResolutionStates`
+  `addTestResultAttachment`, `addTestRunAttachment`, `listTestRunAttachments`, `getTestRunAttachment`,
+  `deleteTestRunAttachment`, `updateTestResultAnalysis` (analysis owner, failure type, resolution, comment),
+  `listTestResolutionStates`
 - Plan points: `assignTester`, `resetTestToActive`
 - History and links: `getTestRuns`, `getTestCaseExecutionHistory`, `getTestPoints`, `linkTestRunToWorkItems`
 - Bugs: `createBugFromTestRun`, `updateBugWithTestRun`

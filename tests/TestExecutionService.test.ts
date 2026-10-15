@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { Readable } from 'stream';
 import { TestExecutionService, parseTestSteps } from '../src/Services/TestExecutionService';
 import { AzureDevOpsConfig } from '../src/Interfaces/AzureDevOps';
 
@@ -751,6 +752,133 @@ describe('TestExecutionService', () => {
       expect(out.count).toBe(1);
       expect(out.points[0].history).toBeUndefined();
       expect(out.historyError).toBe('query not supported');
+    });
+  });
+
+  describe('run attachments', () => {
+    let tmpDir: string;
+    const attachments = [
+      { id: 6, fileName: 'run-a-notes.txt', size: 28, comment: 'notes', createdDate: '2026-10-15T16:00:00Z', url: 'https://att/6' },
+      { id: 7, fileName: 'big.bin', size: 200000, url: 'https://att/7' }
+    ];
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'test-exec-att-'));
+      testApi.getTestRunAttachments = jest.fn().mockResolvedValue(attachments);
+      testApi.getTestRunAttachmentContent = jest.fn().mockImplementation(async (_p: string, _r: number, id: number) =>
+        Readable.from([Buffer.from(id === 6 ? 'hello attachment' : 'x'.repeat(70 * 1024))]));
+    });
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('lists the attachments of a run', async () => {
+      const out = await service.listTestRunAttachments({ runId: 77 });
+      expect(testApi.getTestRunAttachments).toHaveBeenCalledWith('Engineering', 77);
+      expect(out.count).toBe(2);
+      expect(out.attachments[0]).toEqual(expect.objectContaining({ id: 6, fileName: 'run-a-notes.txt', size: 28, comment: 'notes' }));
+    });
+
+    it('saves an attachment to the given file', async () => {
+      const target = path.join(tmpDir, 'copy.txt');
+      const out = await service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: target });
+      expect(fs.readFileSync(target, 'utf8')).toBe('hello attachment');
+      expect(out).toEqual(expect.objectContaining({ fileName: 'run-a-notes.txt', savePath: target, size: 16 }));
+    });
+
+    it('saves into an existing folder under the attachment\'s own name', async () => {
+      const out = await service.getTestRunAttachment({ runId: 77, attachmentId: 6, savePath: tmpDir });
+      expect(out.savePath).toBe(path.join(tmpDir, 'run-a-notes.txt'));
+      expect(fs.readFileSync(out.savePath!, 'utf8')).toBe('hello attachment');
+    });
+
+    it('returns a small attachment inline as base64', async () => {
+      const out = await service.getTestRunAttachment({ runId: 77, attachmentId: 6 });
+      expect(Buffer.from(out.base64Content!, 'base64').toString()).toBe('hello attachment');
+    });
+
+    it('refuses to return a large attachment inline and points at savePath', async () => {
+      await expect(service.getTestRunAttachment({ runId: 77, attachmentId: 7 })).rejects.toThrow('savePath');
+    });
+
+    it('names the attachments that exist when the id is unknown', async () => {
+      await expect(service.getTestRunAttachment({ runId: 77, attachmentId: 99 })).rejects.toThrow(
+        'Test run 77 has no attachment 99. Attachments: 6 (run-a-notes.txt), 7 (big.bin)'
+      );
+    });
+
+    describe('deleting', () => {
+      let del: jest.Mock;
+      beforeEach(() => {
+        del = jest.fn().mockResolvedValue({ statusCode: 200 });
+        (testApi as any).vsoClient = {
+          getVersioningData: jest.fn().mockResolvedValue({ requestUrl: 'https://dev.azure.com/selerix/Engineering/_apis/test/Runs/77/attachments/6', apiVersion: '7.2-preview.1' })
+        };
+        testApi.createRequestOptions = jest.fn().mockReturnValue({ acceptHeader: 'application/json' });
+        (testApi as any).rest = { del };
+      });
+
+      it('deletes one attachment through the REST client', async () => {
+        const out = await service.deleteTestRunAttachment({ runId: 77, attachmentId: 6 });
+        expect((testApi as any).vsoClient.getVersioningData).toHaveBeenCalledWith(
+          '7.2-preview.1', 'Test', '4f004af4-a507-489c-9b13-cb62060beb11', { project: 'Engineering', runId: 77, attachmentId: 6 }
+        );
+        expect(del).toHaveBeenCalledWith('https://dev.azure.com/selerix/Engineering/_apis/test/Runs/77/attachments/6', { acceptHeader: 'application/json' });
+        expect(out).toEqual({ runId: 77, attachmentId: 6, fileName: 'run-a-notes.txt', deleted: true });
+      });
+
+      it('does not send a delete for an attachment that does not exist', async () => {
+        await expect(service.deleteTestRunAttachment({ runId: 77, attachmentId: 99 })).rejects.toThrow('no attachment 99');
+        expect(del).not.toHaveBeenCalled();
+      });
+
+      it('fails when Azure DevOps refuses the delete', async () => {
+        del.mockResolvedValue({ statusCode: 405 });
+        await expect(service.deleteTestRunAttachment({ runId: 77, attachmentId: 6 })).rejects.toThrow('HTTP 405');
+      });
+    });
+  });
+
+  describe('analysis owner', () => {
+    beforeEach(() => {
+      (service as any).connection.getCoreApi = jest.fn().mockResolvedValue({
+        getTeams: jest.fn().mockResolvedValue([{ id: 't1' }]),
+        getTeamMembersWithExtendedProperties: jest.fn().mockResolvedValue([
+          { identity: { id: 'guid-9', uniqueName: 'pat.tester@selerix.com', displayName: 'Pat Tester' } }
+        ])
+      });
+    });
+    const sent = () => testApi.updateTestResults.mock.calls[0][0][0];
+
+    it('sets the owner by GUID without a lookup', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000, owner: { id: 'guid-9', displayName: 'Pat Tester' } });
+      const out = await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, analysisOwner: { id: 'guid-9' } });
+      expect(sent().owner).toEqual({ id: 'guid-9', uniqueName: undefined, displayName: undefined });
+      expect(out.analysisOwner).toEqual(expect.objectContaining({ id: 'guid-9', displayName: 'Pat Tester' }));
+    });
+
+    it('resolves an email to the identity GUID', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+      await service.updateTestResultAnalysis({ runId: 77, resultId: 100000, analysisOwner: { uniqueName: 'Pat.Tester@selerix.com' } });
+      expect(sent().owner).toEqual({ id: 'guid-9', uniqueName: 'pat.tester@selerix.com', displayName: 'Pat Tester' });
+    });
+
+    it('fails without updating when the owner cannot be found', async () => {
+      await expect(
+        service.updateTestResultAnalysis({ runId: 77, resultId: 100000, analysisOwner: { uniqueName: 'nobody@selerix.com' } })
+      ).rejects.toThrow("Could not find 'nobody@selerix.com'");
+      expect(testApi.updateTestResults).not.toHaveBeenCalled();
+    });
+
+    it('keeps the current owner when something else on the result is updated', async () => {
+      testApi.getTestResultById.mockResolvedValue({ id: 100000, comment: 'c', owner: { id: 'guid-o', displayName: 'Olive Owner' } });
+      await service.addTestResultComment({ runId: 77, resultId: 100000, comment: 'more' });
+      expect(sent().owner).toEqual({ id: 'guid-o' });
+    });
+
+    it('reports the owner when a result is read', async () => {
+      testApi.getTestResultById.mockResolvedValue({ ...resultWithIteration(), owner: { id: 'guid-o', displayName: 'Olive Owner', uniqueName: 'olive@selerix.com' } });
+      const out = await service.getTestResult({ runId: 77, resultId: 100000, includeSteps: false });
+      expect(out.analysisOwner).toEqual({ id: 'guid-o', displayName: 'Olive Owner', uniqueName: 'olive@selerix.com' });
     });
   });
 

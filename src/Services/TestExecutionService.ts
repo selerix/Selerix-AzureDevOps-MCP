@@ -6,6 +6,8 @@ import { IReleaseApi } from "azure-devops-node-api/ReleaseApi";
 import { IBuildApi } from "azure-devops-node-api/BuildApi";
 import { BuildQueryOrder, BuildStatus } from "azure-devops-node-api/interfaces/BuildInterfaces";
 import { EnvironmentStatus } from "azure-devops-node-api/interfaces/ReleaseInterfaces";
+import { downloadStreamToFile } from "../utils/downloadStreamToFile";
+import { readStreamWithLimit } from "../utils/readStreamWithLimit";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -39,6 +41,9 @@ import {
   AddTestRunAttachmentParams,
   AssignTesterParams,
   AttachmentContentParams,
+  DeleteTestRunAttachmentParams,
+  GetTestRunAttachmentParams,
+  ListTestRunAttachmentsParams,
   TesterIdentity,
   ResetTestToActiveParams,
   TestAttachmentKind,
@@ -60,6 +65,17 @@ import {
 const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 // Upper bound on run-name lookups for one history response.
 const MAX_RUN_NAME_LOOKUPS = 25;
+// Largest attachment returned inline as base64; anything bigger has to be saved to a file.
+const MAX_INLINE_ATTACHMENT_BYTES = 64 * 1024;
+// Test API resource that serves a single run attachment (area "Test").
+const TEST_RUN_ATTACHMENT_RESOURCE = "4f004af4-a507-489c-9b13-cb62060beb11";
+
+/** The parts of the SDK's test client needed to issue a request the SDK has no method for. */
+interface RawTestApiClient {
+  vsoClient: { getVersioningData(apiVersion: string, area: string, resourceId: string, routeValues: object): Promise<{ requestUrl: string; apiVersion: string }> };
+  createRequestOptions(type: string, apiVersion?: string): unknown;
+  rest: { del(url: string, options?: unknown): Promise<{ statusCode: number }> };
+}
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
 
@@ -535,7 +551,7 @@ export class TestExecutionService extends AzureDevOpsService {
         errorMessage: result.errorMessage,
         failureType: result.failureType,
         resolutionState: result.resolutionState,
-        owner: result.owner?.displayName,
+        analysisOwner: result.owner ? { id: result.owner.id, displayName: result.owner.displayName, uniqueName: result.owner.uniqueName } : undefined,
         runBy: result.runBy?.displayName,
         associatedBugs: (result.associatedBugs || []).map((b) => Number(b.id)),
         steps,
@@ -745,6 +761,88 @@ export class TestExecutionService extends AzureDevOpsService {
     }
   }
 
+  public async listTestRunAttachments(params: ListTestRunAttachmentsParams) {
+    try {
+      const testApi = await this.getTestApi();
+      const attachments = (await testApi.getTestRunAttachments(this.config.project, params.runId)) || [];
+      return {
+        runId: params.runId,
+        count: attachments.length,
+        attachments: attachments.map((a) => ({
+          id: a.id,
+          fileName: a.fileName,
+          size: a.size,
+          comment: a.comment,
+          createdDate: a.createdDate,
+          url: a.url,
+        })),
+      };
+    } catch (error) {
+      console.error(`Error listing attachments of test run ${params.runId}:`, error);
+      throw error;
+    }
+  }
+
+  /** Find one attachment of a run, with a clear error listing what exists when it isn't there. */
+  private async findTestRunAttachment(runId: number, attachmentId: number) {
+    const testApi = await this.getTestApi();
+    const attachments = (await testApi.getTestRunAttachments(this.config.project, runId)) || [];
+    const match = attachments.find((a) => a.id === attachmentId);
+    if (!match) {
+      throw new Error(
+        `Test run ${runId} has no attachment ${attachmentId}. Attachments: ${attachments.map((a) => `${a.id} (${a.fileName})`).join(", ") || "none"}`
+      );
+    }
+    return match;
+  }
+
+  public async getTestRunAttachment(params: GetTestRunAttachmentParams) {
+    try {
+      const attachment = await this.findTestRunAttachment(params.runId, params.attachmentId);
+      const fileName = attachment.fileName || `attachment-${attachment.id}`;
+      const testApi = await this.getTestApi();
+      const stream = await testApi.getTestRunAttachmentContent(this.config.project, params.runId, params.attachmentId);
+
+      if (params.savePath) {
+        // an existing folder gets the attachment's own file name
+        const isFolder = fs.existsSync(params.savePath) && fs.statSync(params.savePath).isDirectory();
+        const target = isFolder ? path.join(params.savePath, path.basename(fileName)) : params.savePath;
+        const { savePath, size } = await downloadStreamToFile(stream, target);
+        return { runId: params.runId, attachmentId: attachment.id, fileName, savePath, size };
+      }
+
+      const buffer = await readStreamWithLimit(stream, MAX_INLINE_ATTACHMENT_BYTES);
+      return { runId: params.runId, attachmentId: attachment.id, fileName, size: buffer.length, base64Content: buffer.toString("base64") };
+    } catch (error) {
+      console.error(`Error getting attachment ${params.attachmentId} of test run ${params.runId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Permanently delete a run attachment. The SDK has no method for this, so the request goes
+   * through the test client's REST plumbing.
+   */
+  public async deleteTestRunAttachment(params: DeleteTestRunAttachmentParams) {
+    try {
+      const attachment = await this.findTestRunAttachment(params.runId, params.attachmentId);
+      const api = (await this.getTestApi()) as unknown as RawTestApiClient;
+      const verData = await api.vsoClient.getVersioningData("7.2-preview.1", "Test", TEST_RUN_ATTACHMENT_RESOURCE, {
+        project: this.config.project,
+        runId: params.runId,
+        attachmentId: params.attachmentId,
+      });
+      const response = await api.rest.del(verData.requestUrl, api.createRequestOptions("application/json", verData.apiVersion));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw new Error(`Azure DevOps refused to delete attachment ${params.attachmentId} of test run ${params.runId} (HTTP ${response.statusCode})`);
+      }
+      return { runId: params.runId, attachmentId: params.attachmentId, fileName: attachment.fileName, deleted: true };
+    } catch (error) {
+      console.error(`Error deleting attachment ${params.attachmentId} of test run ${params.runId}:`, error);
+      throw error;
+    }
+  }
+
   public async addTestResultComment(params: AddTestResultCommentParams) {
     try {
       const testApi = await this.getTestApi();
@@ -818,6 +916,9 @@ export class TestExecutionService extends AzureDevOpsService {
     if (resolutionStateId) {
       update.resolutionStateId = resolutionStateId;
     }
+    if (existing.owner?.id) {
+      update.owner = { id: existing.owner.id } as TestCaseResult["owner"];
+    }
     for (const [key, value] of Object.entries(patch)) {
       if (value !== undefined) {
         (update as Record<string, unknown>)[key] = value;
@@ -830,21 +931,29 @@ export class TestExecutionService extends AzureDevOpsService {
     try {
       if (
         params.failureType === undefined && params.resolutionState === undefined &&
-        params.resolutionStateId === undefined && params.comment === undefined
+        params.resolutionStateId === undefined && params.analysisOwner === undefined && params.comment === undefined
       ) {
-        throw new Error("Provide at least one of failureType, resolutionState, resolutionStateId, comment");
+        throw new Error("Provide at least one of failureType, resolutionState, resolutionStateId, analysisOwner, comment");
       }
       const testApi = await this.getTestApi();
       const resolutionStateId = await this.resolveResolutionStateId(params.resolutionState, params.resolutionStateId);
+      const owner = params.analysisOwner ? await this.resolveTester(params.analysisOwner) : undefined;
       const current = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
       await testApi.updateTestResults(
-        [await this.buildResultUpdate(current, { id: params.resultId, failureType: params.failureType, resolutionStateId, comment: params.comment })],
+        [await this.buildResultUpdate(current, { id: params.resultId, failureType: params.failureType, resolutionStateId, owner: owner as TestCaseResult["owner"], comment: params.comment })],
         this.config.project,
         params.runId
       );
       // The update response doesn't echo the analysis fields, so read them back.
       const r = await testApi.getTestResultById(this.config.project, params.runId, params.resultId);
-      return { runId: params.runId, resultId: params.resultId, failureType: r.failureType, resolutionState: r.resolutionState, comment: r.comment };
+      return {
+        runId: params.runId,
+        resultId: params.resultId,
+        failureType: r.failureType,
+        resolutionState: r.resolutionState,
+        analysisOwner: r.owner ? { id: r.owner.id, displayName: r.owner.displayName, uniqueName: r.owner.uniqueName } : undefined,
+        comment: r.comment,
+      };
     } catch (error) {
       console.error(`Error updating analysis for ${params.runId}/${params.resultId}:`, error);
       throw error;
