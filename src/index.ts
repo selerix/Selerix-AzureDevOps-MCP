@@ -2669,7 +2669,7 @@ async function main() {
     );
 
     allowedTools.has("linkTestRunToWorkItems") && server.tool("linkTestRunToWorkItems",
-      "Link a test run (or one of its results) to existing work items as associated bugs, plus a hyperlink to the run on each work item",
+      "Link a test run (or one of its results) to existing work items. Bugs are recorded as the result's associated bugs; other work item types (User Story, Task, PBI...) get only a hyperlink to the run, which every work item gets",
       {
         runId: z.number().describe("ID of the test run"),
         resultId: z.number().optional().describe("Link only this result; every result in the run when omitted"),

@@ -97,6 +97,10 @@ const MAX_WORK_ITEM_UPDATE_ATTEMPTS = 3;
 const IDENTITY_PAGE_SIZE = 100;
 // Pages read at most, for teams and for each team's members, before concluding nobody matches.
 const MAX_IDENTITY_PAGES = 100;
+// How long the project's bug work item types are reused.
+const BUG_TYPES_TTL_MS = 5 * 60 * 1000;
+// The category that holds a project's bug types (Bug, or whatever its process calls it).
+const BUG_CATEGORY = "Microsoft.BugCategory";
 // How long the project's resolution states are reused while updating many results.
 const RESOLUTION_STATES_TTL_MS = 60 * 1000;
 // Largest attachment returned inline as base64; anything bigger has to be saved to a file.
@@ -1954,6 +1958,58 @@ export class TestExecutionService extends AzureDevOpsService {
     }
   }
 
+  private bugTypesCache?: { at: number; names: Set<string> };
+
+  /**
+   * The names (lower-case) of the project's bug work item types, from the bug category. If the
+   * category cannot be read, "bug" is assumed rather than blocking the link; that fallback is not
+   * kept, so the next call tries the category again.
+   */
+  private async getBugTypeNames(): Promise<Set<string>> {
+    if (this.bugTypesCache && Date.now() - this.bugTypesCache.at < BUG_TYPES_TTL_MS) {
+      return this.bugTypesCache.names;
+    }
+    const witApi = await this.getWorkItemTrackingApi();
+    try {
+      const category = await witApi.getWorkItemTypeCategory(this.config.project, BUG_CATEGORY);
+      const names = new Set((category.workItemTypes || []).map((t) => (t.name ?? "").toLowerCase()).filter(Boolean));
+      if (names.size === 0) {
+        names.add("bug");
+      }
+      this.bugTypesCache = { at: Date.now(), names };
+      return names;
+    } catch {
+      return new Set(["bug"]);
+    }
+  }
+
+  /**
+   * Split work items into bugs and everything else. Only bugs belong in a test result's
+   * associatedBugs: writing a User Story, Task or PBI there would corrupt bug metrics, or be
+   * rejected part-way through a multi-batch update after earlier batches had been written.
+   */
+  private async splitBugs(workItemIds: number[]): Promise<{ bugs: number[]; others: { id: number; type: string }[] }> {
+    const witApi = await this.getWorkItemTrackingApi();
+    const ids = [...new Set(workItemIds)];
+    const items = await witApi.getWorkItems(ids, ["System.WorkItemType"], undefined, undefined, undefined, this.config.project);
+    const bugTypes = await this.getBugTypeNames();
+    const bugs: number[] = [];
+    const others: { id: number; type: string }[] = [];
+    for (const id of ids) {
+      const item = (items || []).find((i) => i?.id === id);
+      if (!item) {
+        throw new Error(`Work item ${id} was not found`);
+      }
+      const type = String(item.fields?.["System.WorkItemType"] ?? "");
+      if (bugTypes.has(type.toLowerCase())) {
+        bugs.push(id);
+      } else {
+        others.push({ id, type });
+      }
+    }
+    return { bugs, others };
+  }
+
   public async linkTestRunToWorkItems(params: LinkTestRunToWorkItemsParams) {
     try {
       if (!params.workItemIds || params.workItemIds.length === 0) {
@@ -1961,12 +2017,18 @@ export class TestExecutionService extends AzureDevOpsService {
       }
       const testApi = await this.getTestApi();
       const run = await testApi.getTestRunById(this.config.project, params.runId);
+      // Only bugs are recorded as the result's associated bugs; any other kind of work item gets
+      // just the hyperlink to the run. Nothing is written until every id is known to exist.
+      const { bugs, others } = await this.splitBugs(params.workItemIds);
 
-      // Which results: the one given, or every result of the run (read page by page).
+      // Which results: the one given, or every result of the run (read page by page). None are
+      // touched when none of the work items is a bug.
       const resultIds: number[] =
-        params.resultId !== undefined
-          ? [params.resultId]
-          : (await this.getAllRunResults(params.runId)).map((r) => r.id!);
+        bugs.length === 0
+          ? []
+          : params.resultId !== undefined
+            ? [params.resultId]
+            : (await this.getAllRunResults(params.runId)).map((r) => r.id!);
 
       // associatedBugs replaces the list, so each result's current bugs are read and merged. That
       // read-merge-write is done under the results' locks, a bounded batch at a time, so neither a
@@ -1981,7 +2043,7 @@ export class TestExecutionService extends AzureDevOpsService {
           const updates: TestCaseResult[] = [];
           for (let j = 0; j < batch.length; j++) {
             const ids = new Set((existingResults[j].associatedBugs || []).map((b) => String(b.id)));
-            params.workItemIds.forEach((id) => ids.add(String(id)));
+            bugs.forEach((id) => ids.add(String(id)));
             const found: string[] = [];
             updates.push(
               await this.buildResultUpdate(existingResults[j], { id: batch[j], associatedBugs: [...ids].map((id) => ({ id })) }, found)
@@ -2004,6 +2066,9 @@ export class TestExecutionService extends AzureDevOpsService {
         runId: params.runId,
         resultsLinked: resultIds,
         workItemIds: params.workItemIds,
+        associatedAsBugs: bugs,
+        // not bugs, so not recorded on the result; they got the hyperlink only
+        notAssociatedAsBugs: others.length ? others : undefined,
         hyperlinked,
         warnings: warnings.size ? [...warnings] : undefined,
       };

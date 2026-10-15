@@ -290,6 +290,10 @@ describe('TestExecutionService', () => {
         fields: { 'Microsoft.VSTS.TCM.Steps': STEPS_XML, 'System.Title': 'Save works', 'System.AreaPath': 'Eng\\Area', 'System.IterationPath': 'Eng\\Sprint 1' }
       }),
       createWorkItem: jest.fn().mockResolvedValue({ id: 900, url: 'https://wi/900' }),
+      // unless a test says otherwise, every work item is a Bug and the bug category holds just "Bug"
+      getWorkItems: jest.fn().mockImplementation(async (ids: number[]) =>
+        ids.map((id) => ({ id, fields: { 'System.WorkItemType': 'Bug' } }))),
+      getWorkItemTypeCategory: jest.fn().mockResolvedValue({ workItemTypes: [{ name: 'Bug' }] }),
       updateWorkItem: jest.fn().mockResolvedValue({}),
     };
     (service as any).getTestApi = jest.fn().mockResolvedValue(testApi);
@@ -2052,6 +2056,92 @@ describe('TestExecutionService', () => {
   });
 
   describe('linkTestRunToWorkItems', () => {
+    describe('which work items are recorded as associated bugs', () => {
+      const RUN77 = 'https://dev.azure.com/selerix/Engineering/_TestManagement/Runs?runId=77&_a=runCharts';
+      const types = (byId: Record<number, string>) =>
+        witApi.getWorkItems.mockImplementation(async (ids: number[]) =>
+          ids.map((id) => ({ id, fields: { 'System.WorkItemType': byId[id] ?? 'Bug' } })));
+      const linkedBugs = () => (testApi.updateTestResults.mock.calls[0]?.[0]?.[0]?.associatedBugs ?? []).map((b: any) => b.id);
+      beforeEach(() => {
+        testApi.getTestResultById.mockResolvedValue({ id: 100000 });
+        testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'run', webAccessUrl: RUN77 });
+        witApi.getWorkItem.mockResolvedValue({ id: 12, rev: 1, relations: [] });
+      });
+
+      it.each(['User Story', 'Task', 'Product Backlog Item', 'Feature', 'Epic'])(
+        'records a %s with only the hyperlink, and leaves the result untouched',
+        async (type) => {
+          types({ 12: type });
+          const out = await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+
+          expect(testApi.updateTestResults).not.toHaveBeenCalled();
+          expect(out.associatedAsBugs).toEqual([]);
+          expect(out.notAssociatedAsBugs).toEqual([{ id: 12, type }]);
+          expect(out.resultsLinked).toEqual([]);
+          expect(out.hyperlinked).toEqual([12]); // the hyperlink is still added
+        }
+      );
+
+      it('records only the bugs of a mixed list, and gives every item the hyperlink', async () => {
+        types({ 11: 'Bug', 12: 'Task', 13: 'User Story' });
+        const out = await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [11, 12, 13] });
+
+        expect(linkedBugs()).toEqual(['11']);
+        expect(out.associatedAsBugs).toEqual([11]);
+        expect(out.notAssociatedAsBugs).toEqual([{ id: 12, type: 'Task' }, { id: 13, type: 'User Story' }]);
+        expect(out.hyperlinked).toEqual([11, 12, 13]);
+      });
+
+      it('treats any type in the bug category as a bug, whatever its name (case-insensitive)', async () => {
+        witApi.getWorkItemTypeCategory.mockResolvedValue({ workItemTypes: [{ name: 'Defect' }, { name: 'Issue' }] });
+        types({ 11: 'defect', 12: 'ISSUE', 13: 'Bug' });
+        const out = await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [11, 12, 13] });
+
+        expect(linkedBugs()).toEqual(['11', '12']);
+        expect(out.notAssociatedAsBugs).toEqual([{ id: 13, type: 'Bug' }]); // this project's bug types are Defect and Issue
+        expect(witApi.getWorkItemTypeCategory).toHaveBeenCalledWith('Engineering', 'Microsoft.BugCategory');
+      });
+
+      it('falls back to the name "Bug" when the bug category cannot be read, and tries again next time', async () => {
+        witApi.getWorkItemTypeCategory.mockRejectedValue(new Error('category unavailable'));
+        types({ 11: 'Bug', 12: 'Task' });
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [11, 12], addRunHyperlink: false });
+        expect(linkedBugs()).toEqual(['11']);
+
+        witApi.getWorkItemTypeCategory.mockResolvedValue({ workItemTypes: [{ name: 'Bug' }] });
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100001, workItemIds: [11], addRunHyperlink: false });
+        expect(witApi.getWorkItemTypeCategory).toHaveBeenCalledTimes(2);
+      });
+
+      it('reads the bug category once for several calls', async () => {
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [11], addRunHyperlink: false });
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100001, workItemIds: [12], addRunHyperlink: false });
+        expect(witApi.getWorkItemTypeCategory).toHaveBeenCalledTimes(1);
+      });
+
+      it('writes nothing, naming the id, when a work item does not exist', async () => {
+        witApi.getWorkItems.mockResolvedValue([{ id: 11, fields: { 'System.WorkItemType': 'Bug' } }]);
+        await expect(
+          service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [11, 999] })
+        ).rejects.toThrow('Work item 999 was not found');
+        expect(testApi.updateTestResults).not.toHaveBeenCalled();
+        expect(witApi.updateWorkItem).not.toHaveBeenCalled();
+      });
+
+      it('does not read the results of a run at all when none of the work items is a bug', async () => {
+        types({ 12: 'Task' });
+        await service.linkTestRunToWorkItems({ runId: 77, workItemIds: [12], addRunHyperlink: false });
+        expect(testApi.getTestResults).not.toHaveBeenCalled();
+        expect(testApi.updateTestResults).not.toHaveBeenCalled();
+      });
+
+      it('looks each work item up once even when it is listed twice', async () => {
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [11, 11, 12], addRunHyperlink: false });
+        expect(witApi.getWorkItems.mock.calls[0][0]).toEqual([11, 12]);
+        expect(linkedBugs()).toEqual(['11', '12']);
+      });
+    });
+
     describe('adding the run hyperlink when links to the same work item overlap', () => {
       const RUN77 = 'https://dev.azure.com/selerix/Engineering/_TestManagement/Runs?runId=77&_a=runCharts';
       const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
