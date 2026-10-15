@@ -1218,12 +1218,74 @@ describe('TestExecutionService', () => {
   });
 
   describe('linkTestRunToWorkItems', () => {
+    describe('adding the run hyperlink when links to the same work item overlap', () => {
+      const RUN77 = 'https://dev.azure.com/selerix/Engineering/_TestManagement/Runs?runId=77&_a=runCharts';
+      const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      let item: { rev: number; relations: { rel: string; url: string }[] };
+
+      beforeEach(() => {
+        item = { rev: 3, relations: [] };
+        testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'run', webAccessUrl: RUN77 });
+        witApi.getWorkItem.mockImplementation(async () => {
+          await delay(5);
+          return { id: 12, rev: item.rev, relations: item.relations.map((r) => ({ ...r })) };
+        });
+        // like Azure DevOps: a patch whose revision test no longer holds is rejected
+        witApi.updateWorkItem.mockImplementation(async (_c: unknown, patch: any[]) => {
+          await delay(5);
+          if (patch.find((p) => p.op === 5 && p.path === '/rev')!.value !== item.rev) {
+            throw Object.assign(new Error('TF26071: This work item has been changed by someone else since you opened it.'), { statusCode: 409 });
+          }
+          for (const p of patch.filter((q) => q.path === '/relations/-')) item.relations.push({ rel: p.value.rel, url: p.value.url });
+          item.rev += 1;
+          return { id: 12 };
+        });
+      });
+
+      it('adds the hyperlink once when two results of one run are linked to the same work item at once', async () => {
+        const [first, second] = await Promise.all([
+          service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] }),
+          service.linkTestRunToWorkItems({ runId: 77, resultId: 100001, workItemIds: [12] })
+        ]);
+        expect(item.relations.filter((r) => r.rel === 'Hyperlink')).toHaveLength(1);
+        // one call added it, the other found it there after its first attempt was rejected
+        expect([...first.hyperlinked, ...second.hyperlinked]).toEqual([12]);
+      });
+
+      it('adds it once however many calls overlap', async () => {
+        await Promise.all([100000, 100001, 100002].map((resultId) =>
+          service.linkTestRunToWorkItems({ runId: 77, resultId, workItemIds: [12] })));
+        expect(item.relations.filter((r) => r.rel === 'Hyperlink')).toHaveLength(1);
+      });
+
+      it('guards the addition with the revision it read', async () => {
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+        expect(witApi.updateWorkItem.mock.calls[0][1][0]).toEqual({ op: 5, path: '/rev', value: 3 });
+      });
+
+      it('gives up, naming the work item, when it keeps changing', async () => {
+        witApi.updateWorkItem.mockRejectedValue(Object.assign(new Error('conflict'), { statusCode: 409 }));
+        await expect(service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] })).rejects.toThrow(
+          'Work item 12 kept changing while it was being updated (3 attempts), so nothing was added. Try again.'
+        );
+        expect(witApi.updateWorkItem).toHaveBeenCalledTimes(3);
+      });
+
+      it('does not retry an error that is not a conflict', async () => {
+        witApi.updateWorkItem.mockRejectedValue(Object.assign(new Error('forbidden'), { statusCode: 403 }));
+        await expect(service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] })).rejects.toThrow('forbidden');
+        expect(witApi.updateWorkItem).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('merges with bugs already associated and adds one run hyperlink', async () => {
       testApi.getTestResultById.mockResolvedValue({ id: 100000, associatedBugs: [{ id: '11' }] });
       const out = await service.linkTestRunToWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
 
       expect(testApi.updateTestResults.mock.calls[0][0]).toEqual([{ id: 100000, associatedBugs: [{ id: '11' }, { id: '12' }] }]);
-      expect(witApi.updateWorkItem.mock.calls[0][1][0].value).toEqual(expect.objectContaining({ rel: 'Hyperlink', url: 'https://run/77' }));
+      const patch = witApi.updateWorkItem.mock.calls[0][1] as { op: number; path: string; value: any }[];
+      expect(patch[0]).toEqual({ op: 5, path: '/rev', value: undefined }); // guarded by the revision it was read at
+      expect(patch.find((p) => p.path === '/relations/-')!.value).toEqual(expect.objectContaining({ rel: 'Hyperlink', url: 'https://run/77' }));
       expect(out.hyperlinked).toEqual([12]);
     });
 

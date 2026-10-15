@@ -19,7 +19,7 @@ import {
   ResultState,
 } from "azure-devops-node-api/interfaces/TestPlanInterfaces";
 import { Operation } from "azure-devops-node-api/interfaces/common/VSSInterfaces";
-import { WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces";
+import { WorkItem, WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces";
 import {
   ListTestResolutionStatesParams,
   CreateBugFromTestRunParams,
@@ -79,8 +79,8 @@ const RESULT_UPDATE_BATCH_SIZE = 50;
 // Teams, and members of a team, read per request when looking a person up (paged with top/skip).
 // Results asked of the history query for one test case before giving up on filling every point.
 const MAX_HISTORY_RESULTS = 1000;
-// Attempts at updating a bug that someone else keeps changing underneath the update.
-const MAX_BUG_UPDATE_ATTEMPTS = 3;
+// Attempts at updating a work item that someone else keeps changing underneath the update.
+const MAX_WORK_ITEM_UPDATE_ATTEMPTS = 3;
 const IDENTITY_PAGE_SIZE = 100;
 // Pages read at most, for teams and for each team's members, before concluding nobody matches.
 const MAX_IDENTITY_PAGES = 100;
@@ -1734,20 +1734,55 @@ export class TestExecutionService extends AzureDevOpsService {
     }
   }
 
+  /**
+   * Update a work item with changes worked out from a fresh read of it, guarded by a JSON Patch
+   * test of the revision that read saw. If the item has changed since (a concurrent update), Azure
+   * DevOps rejects the patch, so it is never applied on top of something it did not see; the
+   * changes are then worked out again from a new read, up to MAX_WORK_ITEM_UPDATE_ATTEMPTS times.
+   * `build` returns the changes, or nothing when there is nothing left to do (for example the
+   * thing to add is already there). Returns whether an update was made.
+   */
+  protected async updateWorkItemIfUnchanged(
+    workItemId: number,
+    label: string,
+    build: (workItem: WorkItem) => { op: Operation; path: string; value: unknown }[] | undefined
+  ): Promise<boolean> {
+    const witApi = await this.getWorkItemTrackingApi();
+    for (let attempt = 1; ; attempt++) {
+      const workItem = await witApi.getWorkItem(workItemId, undefined, undefined, WorkItemExpand.All, this.config.project);
+      const changes = build(workItem);
+      if (!changes || changes.length === 0) {
+        return false;
+      }
+      try {
+        await witApi.updateWorkItem(
+          undefined,
+          [{ op: Operation.Test, path: "/rev", value: workItem.rev }, ...changes],
+          workItemId,
+          this.config.project
+        );
+        return true;
+      } catch (error) {
+        if (!isRevisionConflict(error)) {
+          throw error;
+        }
+        if (attempt >= MAX_WORK_ITEM_UPDATE_ATTEMPTS) {
+          throw new Error(`${label} kept changing while it was being updated (${attempt} attempts), so nothing was added. Try again.`);
+        }
+      }
+    }
+  }
+
   /** Add a hyperlink to a run on a work item unless one is already there. Returns true when added. */
   protected async addRunHyperlink(workItemId: number, url: string, comment: string): Promise<boolean> {
-    const witApi = await this.getWorkItemTrackingApi();
-    const workItem = await witApi.getWorkItem(workItemId, undefined, undefined, WorkItemExpand.Relations, this.config.project);
-    if ((workItem.relations || []).some((r) => r.rel === "Hyperlink" && sameRunLink(r.url, url))) {
-      return false;
-    }
-    await witApi.updateWorkItem(
-      undefined,
-      [{ op: Operation.Add, path: "/relations/-", value: { rel: "Hyperlink", url, attributes: { comment } } }],
-      workItemId,
-      this.config.project
+    // The check and the addition are one guarded update: two calls linking results of the same run
+    // to one work item at once cannot both add the hyperlink, because the second is rejected and
+    // then sees the first's.
+    return await this.updateWorkItemIfUnchanged(workItemId, `Work item ${workItemId}`, (workItem) =>
+      (workItem.relations || []).some((r) => r.rel === "Hyperlink" && sameRunLink(r.url, url))
+        ? undefined
+        : [{ op: Operation.Add, path: "/relations/-", value: { rel: "Hyperlink", url, attributes: { comment } } }]
     );
-    return true;
   }
 
   private webBaseUrl(): string {
@@ -1867,14 +1902,10 @@ export class TestExecutionService extends AzureDevOpsService {
       const witApi = await this.getWorkItemTrackingApi();
       const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails);
       // The Repro Steps text is read, extended and written back, so two updates overlapping on one
-      // bug could overwrite each other's report. The update therefore carries a test of the revision
-      // it was built from: if the bug has changed since, Azure DevOps rejects it, and it is rebuilt
-      // from a fresh read instead of silently replacing the newer text.
-      for (let attempt = 1; ; attempt++) {
-        const bug = await witApi.getWorkItem(params.bugId, undefined, undefined, WorkItemExpand.All, this.config.project);
-
+      // bug could overwrite each other's report. The update is therefore guarded by a test of the
+      // revision it was built from and rebuilt from a fresh read when the bug has changed since.
+      await this.updateWorkItemIfUnchanged(params.bugId, `Bug ${params.bugId}`, (bug) => {
         const patch: { op: Operation; path: string; value: unknown }[] = [
-          { op: Operation.Test, path: "/rev", value: bug.rev },
           { op: Operation.Add, path: "/fields/System.History", value: report.html },
         ];
         if (params.appendToReproSteps) {
@@ -1889,21 +1920,8 @@ export class TestExecutionService extends AzureDevOpsService {
             patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
           }
         }
-
-        try {
-          await witApi.updateWorkItem(undefined, patch, params.bugId, this.config.project);
-          break;
-        } catch (error) {
-          if (!isRevisionConflict(error)) {
-            throw error;
-          }
-          if (attempt >= MAX_BUG_UPDATE_ATTEMPTS) {
-            throw new Error(
-              `Bug ${params.bugId} kept changing while it was being updated (${attempt} attempts), so nothing was added. Try again.`
-            );
-          }
-        }
-      }
+        return patch;
+      });
 
       try {
         await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false });
