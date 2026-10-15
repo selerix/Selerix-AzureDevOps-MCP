@@ -77,6 +77,8 @@ const MAX_RESULT_PAGES = 200;
 // Results updated per request when linking a whole run to work items.
 const RESULT_UPDATE_BATCH_SIZE = 50;
 // Teams, and members of a team, read per request when looking a person up (paged with top/skip).
+// Results asked of the history query for one test case before giving up on filling every point.
+const MAX_HISTORY_RESULTS = 1000;
 const IDENTITY_PAGE_SIZE = 100;
 // Pages read at most, for teams and for each team's members, before concluding nobody matches.
 const MAX_IDENTITY_PAGES = 100;
@@ -1430,6 +1432,38 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   /**
+   * The recent results of a test case, enough to give each of the given points up to `top` of them.
+   * The query's limit applies to the whole test case, across all of its points, before any grouping
+   * by point - so one busy configuration can use it all up and hide another's older results. The
+   * query is therefore widened until every point has `top` results or the test case's results run
+   * out, up to MAX_HISTORY_RESULTS; points still short at that cap are reported as incomplete.
+   */
+  private async getResultsForPoints(testCaseId: number, planId: number, pointIds: number[], top: number) {
+    const testApi = await this.getTestApi();
+    let count = Math.min(Math.max(25, top * 5), MAX_HISTORY_RESULTS);
+    for (;;) {
+      const response = await testApi.getTestResultsByQuery(
+        { resultsFilter: { automatedTestName: "", testCaseId, testPlanId: planId, resultsCount: count } },
+        this.config.project
+      );
+      const results = response?.results || [];
+      const perPoint = new Map<number, number>();
+      for (const r of results) {
+        const pointId = Number(r.testPoint?.id);
+        perPoint.set(pointId, (perPoint.get(pointId) ?? 0) + 1);
+      }
+      const short = pointIds.filter((id) => (perPoint.get(id) ?? 0) < top);
+      if (short.length === 0 || results.length < count) {
+        return { results, incompletePointIds: [] as number[] }; // filled, or every result has been read
+      }
+      if (count >= MAX_HISTORY_RESULTS) {
+        return { results, incompletePointIds: short };
+      }
+      count = Math.min(count * 2, MAX_HISTORY_RESULTS);
+    }
+  }
+
+  /**
    * Read test points: each test case + configuration pair in a suite, with its current
    * outcome, tester, last run and result, and when it was last reset to Active. With
    * includeHistory, also the recent results recorded against each point.
@@ -1483,6 +1517,7 @@ export class TestExecutionService extends AzureDevOpsService {
       let history: Record<number, unknown[]> | undefined;
       let historyError: string | undefined;
       const historyRunsNotLookedUp: number[] = [];
+      const historyIncompleteForPoints: number[] = [];
       if (params.includeHistory && shown.length > 0) {
         try {
           const testApi = await this.getTestApi();
@@ -1491,17 +1526,16 @@ export class TestExecutionService extends AzureDevOpsService {
           // case (all of its results across runs) and group the results by the point they ran.
           const results = [];
           for (const testCaseId of new Set(shown.map((p) => p.testCaseId!))) {
-            const response = await testApi.getTestResultsByQuery(
-              { resultsFilter: { automatedTestName: "", testCaseId, testPlanId: params.planId, resultsCount: Math.max(25, top * 5) } },
-              this.config.project
-            );
-            results.push(...(response?.results || []));
+            const pointIds = shown.filter((p) => p.testCaseId === testCaseId).map((p) => p.pointId);
+            const found = await this.getResultsForPoints(testCaseId, params.planId, pointIds, top);
+            results.push(...found.results);
+            historyIncompleteForPoints.push(...found.incompletePointIds);
           }
           const runInfo = await this.getRunInfo(results.map((r) => Number(r.testRun?.id)));
           historyRunsNotLookedUp.push(
             ...[...new Set(results.map((r) => Number(r.testRun?.id)))].filter((id) => Number.isFinite(id) && !runInfo.has(id))
           );
-          history = {};
+          history = Object.fromEntries(shown.map((p) => [p.pointId, [] as unknown[]]));
           for (const r of results) {
             const pointId = Number(r.testPoint?.id);
             if (!shown.some((p) => p.pointId === pointId)) continue;
@@ -1530,6 +1564,8 @@ export class TestExecutionService extends AzureDevOpsService {
         points: shown.map((p) => ({ ...p, history: history?.[p.pointId] })),
         historyError,
         historyRunsNotLookedUp: historyRunsNotLookedUp.length ? historyRunsNotLookedUp : undefined,
+        // points whose history may be longer than shown: the retrieval cap was reached before they had enough results
+        historyIncompleteForPoints: historyIncompleteForPoints.length ? historyIncompleteForPoints : undefined,
       };
     } catch (error) {
       console.error(`Error getting test points for plan ${params.planId}:`, error);

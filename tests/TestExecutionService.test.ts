@@ -1376,6 +1376,59 @@ describe('TestExecutionService', () => {
       expect(history[0].runName).toBe('run');
     });
 
+    describe('history of a point that another configuration crowds out', () => {
+      // newest first; the query returns the latest `resultsCount` of them, like the real one
+      const dataset = (newest: Record<string, unknown>[]) =>
+        jest.fn().mockImplementation(async (q: { resultsFilter: { resultsCount: number } }) => ({
+          results: newest.slice(0, q.resultsFilter.resultsCount)
+        }));
+      const resultsFor = (pointId: string, count: number, from: number) =>
+        Array.from({ length: count }, (_, i) => ({
+          id: from + i, outcome: 'Passed', testPoint: { id: pointId }, testRun: { id: String(from + i) }
+        }));
+
+      it('widens the query until the requested point has its history', async () => {
+        // configuration A (point 9) ran 50 times more recently than configuration B (point 10) ever did
+        testPlanApi.getPointsList.mockResolvedValue([{ id: 10, testCaseReference: { id: 5, name: 'Save works' } }]);
+        testApi.getTestResultsByQuery = dataset([...resultsFor('9', 50, 1000), ...resultsFor('10', 3, 500)]);
+
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true });
+
+        expect(testApi.getTestResultsByQuery.mock.calls.map((c) => c[0].resultsFilter.resultsCount)).toEqual([50, 100]);
+        expect((out.points[0].history as unknown[]).length).toBe(3);
+        expect(out.historyIncompleteForPoints).toBeUndefined();
+      });
+
+      it('stops widening once the point has the history it asked for', async () => {
+        testPlanApi.getPointsList.mockResolvedValue([{ id: 10, testCaseReference: { id: 5, name: 'Save works' } }]);
+        testApi.getTestResultsByQuery = dataset([...resultsFor('10', 40, 1000)]);
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true, historyTop: 5 });
+        expect(testApi.getTestResultsByQuery).toHaveBeenCalledTimes(1);
+        expect((out.points[0].history as unknown[]).length).toBe(5);
+      });
+
+      it('reports the point as incomplete when the cap is reached before it has enough results', async () => {
+        testPlanApi.getPointsList.mockResolvedValue([{ id: 10, testCaseReference: { id: 5, name: 'Save works' } }]);
+        testApi.getTestResultsByQuery = dataset(resultsFor('9', 5000, 1000)); // only A, forever
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true });
+
+        const counts = testApi.getTestResultsByQuery.mock.calls.map((c) => c[0].resultsFilter.resultsCount);
+        expect(counts[counts.length - 1]).toBe(1000);
+        expect(Math.max(...counts)).toBe(1000);
+        expect(out.historyIncompleteForPoints).toEqual([10]);
+        expect(out.points[0].history).toEqual([]);
+      });
+
+      it('gives a point with no results an empty history rather than none', async () => {
+        testPlanApi.getPointsList.mockResolvedValue([{ id: 10, testCaseReference: { id: 5, name: 'Save works' } }]);
+        testApi.getTestResultsByQuery = dataset([]);
+        const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5], includeHistory: true });
+        expect(out.points[0].history).toEqual([]);
+        expect(testApi.getTestResultsByQuery).toHaveBeenCalledTimes(1);
+        expect(out.historyIncompleteForPoints).toBeUndefined();
+      });
+    });
+
     it('still returns the points when the history query fails', async () => {
       testPlanApi.getPointsList.mockResolvedValue([point()]);
       testApi.getTestResultsByQuery = jest.fn().mockRejectedValue(new Error('query not supported'));
