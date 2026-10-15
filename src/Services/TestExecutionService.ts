@@ -15,6 +15,7 @@ import {
   CreateBugFromTestRunParams,
   UpdateBugWithTestRunParams,
   GetTestCaseExecutionHistoryParams,
+  GetTestPointsParams,
   GetTestRunsParams,
   LinkTestRunToWorkItemsParams,
 } from "../Interfaces/TestExecution";
@@ -50,6 +51,8 @@ import {
 
 // The test attachment API takes the file as a base64 string inside a JSON body.
 const MAX_TEST_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+// Upper bound on run-name lookups for one history response.
+const MAX_RUN_NAME_LOOKUPS = 25;
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"];
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".avi", ".mkv", ".wmv"];
 
@@ -148,27 +151,32 @@ export class TestExecutionService extends AzureDevOpsService {
    * cases. When suiteId is omitted each test case's suites are looked up and filtered to the
    * plan. A test case with several configurations yields one point per configuration.
    */
+  /** Group test cases by the suite of the plan that holds them: suite id -> test case ids. */
+  private async groupTestCasesBySuite(planId: number, testCaseIds: number[], suiteId?: number): Promise<Map<number, number[]>> {
+    const bySuite = new Map<number, number[]>();
+    if (suiteId !== undefined) {
+      bySuite.set(suiteId, [...testCaseIds]);
+      return bySuite;
+    }
+    const testPlanApi = await this.getTestPlanApi();
+    for (const testCaseId of testCaseIds) {
+      const suites = await testPlanApi.getSuitesByTestCaseId(testCaseId);
+      for (const suite of suites || []) {
+        if (suite.plan?.id === planId && suite.id !== undefined) {
+          bySuite.set(suite.id, [...(bySuite.get(suite.id) || []), testCaseId]);
+        }
+      }
+    }
+    return bySuite;
+  }
+
   protected async resolveTestPoints(
     planId: number,
     testCaseIds: number[],
     suiteId?: number
   ): Promise<{ points: ResolvedTestPoint[]; unresolvedTestCaseIds: number[] }> {
     const testPlanApi = await this.getTestPlanApi();
-
-    // suite id -> test cases to look for in that suite
-    const bySuite = new Map<number, number[]>();
-    if (suiteId !== undefined) {
-      bySuite.set(suiteId, [...testCaseIds]);
-    } else {
-      for (const testCaseId of testCaseIds) {
-        const suites = await testPlanApi.getSuitesByTestCaseId(testCaseId);
-        for (const suite of suites || []) {
-          if (suite.plan?.id === planId && suite.id !== undefined) {
-            bySuite.set(suite.id, [...(bySuite.get(suite.id) || []), testCaseId]);
-          }
-        }
-      }
-    }
+    const bySuite = await this.groupTestCasesBySuite(planId, testCaseIds, suiteId);
 
     const points = new Map<number, ResolvedTestPoint>();
     for (const [suite, caseIds] of bySuite) {
@@ -912,6 +920,125 @@ export class TestExecutionService extends AzureDevOpsService {
     }
   }
 
+  /** Look up run names for a set of run ids; ids that can't be read are left out. */
+  protected async getRunNames(runIds: number[]): Promise<Map<number, string>> {
+    const names = new Map<number, string>();
+    const distinct = [...new Set(runIds.filter((id) => Number.isFinite(id)))].slice(0, MAX_RUN_NAME_LOOKUPS);
+    const testApi = await this.getTestApi();
+    await Promise.all(
+      distinct.map(async (id) => {
+        try {
+          const run = await testApi.getTestRunById(this.config.project, id);
+          if (run?.name) {
+            names.set(id, run.name);
+          }
+        } catch {
+          // a run that can't be read just keeps no name
+        }
+      })
+    );
+    return names;
+  }
+
+  /**
+   * Read test points: each test case + configuration pair in a suite, with its current
+   * outcome, tester, last run and result, and when it was last reset to Active. With
+   * includeHistory, also the recent results recorded against each point.
+   */
+  public async getTestPoints(params: GetTestPointsParams) {
+    try {
+      const hasCases = !!params.testCaseIds && params.testCaseIds.length > 0;
+      if (!hasCases && params.suiteId === undefined) {
+        throw new Error("Provide testCaseIds, a suiteId, or both");
+      }
+      const testPlanApi = await this.getTestPlanApi();
+      const bySuite = hasCases
+        ? await this.groupTestCasesBySuite(params.planId, params.testCaseIds!, params.suiteId)
+        : new Map<number, number[]>([[params.suiteId!, []]]);
+
+      const points = [];
+      let moreAvailable = false;
+      for (const [suiteId, caseIds] of bySuite) {
+        const page = await testPlanApi.getPointsList(
+          this.config.project, params.planId, suiteId, undefined, caseIds.length ? caseIds.join(",") : undefined,
+          undefined, undefined, true, false
+        );
+        moreAvailable = moreAvailable || !!page.continuationToken;
+        for (const p of page || []) {
+          points.push({
+            pointId: p.id,
+            suiteId,
+            testCaseId: p.testCaseReference?.id !== undefined ? Number(p.testCaseReference.id) : undefined,
+            testCaseTitle: p.testCaseReference?.name,
+            configuration: p.configuration?.name,
+            isActive: p.isActive,
+            isAutomated: p.isAutomated,
+            tester: p.tester?.displayName,
+            outcome: p.results?.outcome,
+            state: p.results?.state,
+            lastRunId: p.results?.lastTestRunId,
+            lastResultId: p.results?.lastResultId,
+            lastRunBuild: p.results?.lastRunBuildNumber,
+            lastResultDetails: p.results?.lastResultDetails,
+            failureType: p.results?.failureType,
+            lastResetToActive: p.lastResetToActive,
+            lastUpdatedBy: p.lastUpdatedBy?.displayName,
+            lastUpdatedDate: p.lastUpdatedDate,
+          });
+        }
+      }
+
+      const wanted = hasCases ? new Set(params.testCaseIds) : undefined;
+      const shown = wanted ? points.filter((p) => p.testCaseId !== undefined && wanted.has(p.testCaseId)) : points;
+      const unresolvedTestCaseIds = wanted ? [...wanted].filter((id) => !shown.some((p) => p.testCaseId === id)) : [];
+
+      let history: Record<number, unknown[]> | undefined;
+      let historyError: string | undefined;
+      if (params.includeHistory && shown.length > 0) {
+        try {
+          const testApi = await this.getTestApi();
+          const top = params.historyTop ?? 10;
+          const response = await testApi.getTestResultsByQuery(
+            { resultsFilter: { automatedTestName: "", testPointIds: shown.map((p) => p.pointId), testPlanId: params.planId, resultsCount: top * shown.length } },
+            this.config.project
+          );
+          const results = response?.results || [];
+          const runNames = await this.getRunNames(results.map((r) => Number(r.testRun?.id)));
+          history = {};
+          for (const r of results) {
+            const pointId = Number(r.testPoint?.id);
+            if (!shown.some((p) => p.pointId === pointId)) continue;
+            const list = (history[pointId] = history[pointId] || []);
+            if (list.length >= top) continue;
+            list.push({
+              runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
+              runName: runNames.get(Number(r.testRun?.id)) || undefined,
+              resultId: r.id,
+              outcome: r.outcome,
+              runBy: r.runBy?.displayName,
+              completedDate: r.completedDate,
+              associatedBugs: (r.associatedBugs || []).map((b) => Number(b.id)),
+            });
+          }
+        } catch (error) {
+          historyError = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      return {
+        planId: params.planId,
+        count: shown.length,
+        moreAvailable: moreAvailable || undefined,
+        unresolvedTestCaseIds,
+        points: shown.map((p) => ({ ...p, history: history?.[p.pointId] })),
+        historyError,
+      };
+    } catch (error) {
+      console.error(`Error getting test points for plan ${params.planId}:`, error);
+      throw error;
+    }
+  }
+
   public async getTestCaseExecutionHistory(params: GetTestCaseExecutionHistoryParams) {
     try {
       const testApi = await this.getTestApi();
@@ -927,12 +1054,15 @@ export class TestExecutionService extends AzureDevOpsService {
         this.config.project
       );
       const results = response?.results || [];
+      // The query leaves the run name blank, so look the names up.
+      const runNames = await this.getRunNames(results.map((r) => Number(r.testRun?.id)));
       return {
         testCaseId: params.testCaseId,
         count: results.length,
         executions: results.map((r) => ({
           runId: r.testRun?.id ? Number(r.testRun.id) : undefined,
-          runName: r.testRun?.name,
+          runName: runNames.get(Number(r.testRun?.id)) || r.testRun?.name || undefined,
+          testPointId: r.testPoint?.id ? Number(r.testPoint.id) : undefined,
           resultId: r.id,
           outcome: r.outcome,
           state: r.state,

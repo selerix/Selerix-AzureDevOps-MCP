@@ -2576,6 +2576,25 @@ async function main() {
       }
     );
 
+    allowedTools.has("getTestPoints") && server.tool("getTestPoints",
+      "Read test points (test case + configuration pairs in a suite): current outcome, tester, last run and result, last reset to Active, optionally with recent results per point. Give testCaseIds, a suiteId, or both.",
+      {
+        planId: z.number().describe("ID of the test plan"),
+        suiteId: z.number().optional().describe("Suite to read; every point in it when testCaseIds is omitted"),
+        testCaseIds: z.array(z.number()).optional().describe("Only the points of these test cases; their suites are looked up in the plan when suiteId is omitted"),
+        includeHistory: z.boolean().optional().describe("Also return recent results recorded against each point"),
+        historyTop: z.number().optional().describe("Results per point when includeHistory is set (default 10)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.getTestPoints(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     allowedTools.has("getTestCaseExecutionHistory") && server.tool("getTestCaseExecutionHistory",
       "Find the runs and results recorded for a test case, newest first",
       {

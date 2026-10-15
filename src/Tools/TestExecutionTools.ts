@@ -2,6 +2,7 @@ import { AzureDevOpsConfig } from "../Interfaces/AzureDevOps";
 import { TestExecutionService } from "../Services/TestExecutionService";
 import { formatMcpResponse, formatErrorResponse, McpResponse } from '../Interfaces/Common';
 import {
+  GetTestPointsParams,
   ListTestResolutionStatesParams,
   ListReleaseDefinitionsParams,
   GetReleaseDefinitionDetailsParams,
@@ -177,6 +178,16 @@ export class TestExecutionTools {
       return formatMcpResponse(result, "Test runs");
     } catch (error: unknown) {
       console.error('Error in getTestRuns:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  async getTestPoints(params: GetTestPointsParams): Promise<McpResponse> {
+    try {
+      const result = await this.service.getTestPoints(params);
+      return formatMcpResponse(result, "Test points");
+    } catch (error: unknown) {
+      console.error('Error in getTestPoints:', error);
       return formatErrorResponse(error);
     }
   }

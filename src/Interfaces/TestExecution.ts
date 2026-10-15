@@ -231,3 +231,15 @@ export interface StartedTestResult {
   outcome?: string;
   state?: string;
 }
+
+export interface GetTestPointsParams {
+  planId: number;
+  /** Suite to read; with testCaseIds omitted, every point in the suite */
+  suiteId?: number;
+  /** Only the points of these test cases; the suites holding them are looked up when suiteId is omitted */
+  testCaseIds?: number[];
+  /** Also return the recent results recorded against each point */
+  includeHistory?: boolean;
+  /** Results per point when includeHistory is set (default 10) */
+  historyTop?: number;
+}

@@ -608,7 +608,92 @@ describe('TestExecutionService', () => {
     });
   });
 
+  describe('getTestPoints', () => {
+    const point = (over: Record<string, unknown> = {}) => ({
+      id: 9,
+      testCaseReference: { id: 5, name: 'Save works' },
+      configuration: { id: 3, name: 'Windows 10' },
+      isActive: false,
+      isAutomated: false,
+      tester: { displayName: 'Pat Tester' },
+      results: { outcome: 'failed', state: 'completed', lastTestRunId: 77, lastResultId: 100000, lastRunBuildNumber: '42', failureType: 'regression' },
+      lastResetToActive: '2026-10-15T15:00:00Z',
+      lastUpdatedBy: { displayName: 'Ivan' },
+      lastUpdatedDate: '2026-10-15T15:01:00Z',
+      ...over
+    });
+
+    it('reads the points of a test case from the plan\'s suite only', async () => {
+      testPlanApi.getPointsList.mockResolvedValue([point()]);
+      const out = await service.getTestPoints({ planId: 1, testCaseIds: [5] });
+
+      expect(testPlanApi.getPointsList).toHaveBeenCalledTimes(1);
+      expect(testPlanApi.getPointsList).toHaveBeenCalledWith('Engineering', 1, 20, undefined, '5', undefined, undefined, true, false);
+      expect(out.points[0]).toEqual(expect.objectContaining({
+        pointId: 9, suiteId: 20, testCaseId: 5, configuration: 'Windows 10', tester: 'Pat Tester',
+        outcome: 'failed', lastRunId: 77, lastResultId: 100000, lastRunBuild: '42', lastResetToActive: '2026-10-15T15:00:00Z'
+      }));
+      expect(out.unresolvedTestCaseIds).toEqual([]);
+    });
+
+    it('reads every point of a suite when no test cases are given', async () => {
+      testPlanApi.getPointsList.mockResolvedValue([point(), point({ id: 10, testCaseReference: { id: 6, name: 'Other' } })]);
+      const out = await service.getTestPoints({ planId: 1, suiteId: 20 });
+      expect(testPlanApi.getPointsList).toHaveBeenCalledWith('Engineering', 1, 20, undefined, undefined, undefined, undefined, true, false);
+      expect(out.count).toBe(2);
+      expect(testPlanApi.getSuitesByTestCaseId).not.toHaveBeenCalled();
+    });
+
+    it('reports requested test cases that have no point', async () => {
+      testPlanApi.getPointsList.mockResolvedValue([point()]);
+      const out = await service.getTestPoints({ planId: 1, suiteId: 20, testCaseIds: [5, 6] });
+      expect(out.unresolvedTestCaseIds).toEqual([6]);
+    });
+
+    it('requires test cases or a suite', async () => {
+      await expect(service.getTestPoints({ planId: 1 })).rejects.toThrow('testCaseIds, a suiteId, or both');
+    });
+
+    it('attaches recent results to each point when asked, newest first, capped per point', async () => {
+      testPlanApi.getPointsList.mockResolvedValue([point()]);
+      testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
+        results: [
+          { id: 3, testPoint: { id: '9' }, testRun: { id: '77' }, outcome: 'Failed', runBy: { displayName: 'Ivan' } },
+          { id: 2, testPoint: { id: '9' }, testRun: { id: '70' }, outcome: 'Passed' },
+          { id: 1, testPoint: { id: '9' }, testRun: { id: '60' }, outcome: 'Passed' },
+          { id: 8, testPoint: { id: '99' }, testRun: { id: '50' }, outcome: 'Passed' }
+        ]
+      });
+      const out = await service.getTestPoints({ planId: 1, testCaseIds: [5], includeHistory: true, historyTop: 2 });
+
+      expect(testApi.getTestResultsByQuery.mock.calls[0][0].resultsFilter).toEqual(
+        expect.objectContaining({ testPointIds: [9], testPlanId: 1 })
+      );
+      const history = out.points[0].history as { resultId: number; runName?: string }[];
+      expect(history.map((h) => h.resultId)).toEqual([3, 2]);
+      expect(history[0].runName).toBe('run');
+    });
+
+    it('still returns the points when the history query fails', async () => {
+      testPlanApi.getPointsList.mockResolvedValue([point()]);
+      testApi.getTestResultsByQuery = jest.fn().mockRejectedValue(new Error('query not supported'));
+      const out = await service.getTestPoints({ planId: 1, testCaseIds: [5], includeHistory: true });
+      expect(out.count).toBe(1);
+      expect(out.points[0].history).toBeUndefined();
+      expect(out.historyError).toBe('query not supported');
+    });
+  });
+
   describe('history', () => {
+    it('fills in run names the query leaves blank', async () => {
+      testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
+        results: [{ id: 1, outcome: 'Passed', testPoint: { id: '9' }, testRun: { id: '77', name: '' } }]
+      });
+      testApi.getTestRunById.mockResolvedValue({ id: 77, name: 'Reports (Manual)' });
+      const out = await service.getTestCaseExecutionHistory({ testCaseId: 5 });
+      expect(out.executions[0]).toEqual(expect.objectContaining({ runName: 'Reports (Manual)', testPointId: 9 }));
+    });
+
     it('maps test case execution history', async () => {
       testApi.getTestResultsByQuery = jest.fn().mockResolvedValue({
         results: [{ id: 1, outcome: 'Failed', testRun: { id: '77', name: 'run' }, associatedBugs: [{ id: '9' }] }]

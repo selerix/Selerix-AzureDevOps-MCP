@@ -249,7 +249,7 @@ Run test cases, record results, and file bugs (`src/Services/TestExecutionServic
 - Record: `getTestResult`, `setTestStepResults`, `setTestResultOutcome`, `addTestResultComment`,
   `addTestResultAttachment`, `addTestRunAttachment`, `updateTestResultAnalysis`, `listTestResolutionStates`
 - Plan points: `assignTester`, `resetTestToActive`
-- History and links: `getTestRuns`, `getTestCaseExecutionHistory`, `linkTestRunToWorkItems`
+- History and links: `getTestRuns`, `getTestCaseExecutionHistory`, `getTestPoints`, `linkTestRunToWorkItems`
 - Bugs: `createBugFromTestRun`, `updateBugWithTestRun`
 
 Notes:
