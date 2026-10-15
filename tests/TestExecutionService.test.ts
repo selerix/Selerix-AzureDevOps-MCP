@@ -201,6 +201,86 @@ describe('TestExecutionService', () => {
         })
       ).rejects.toThrow('Available stages: Dev, Stage');
       expect(releaseApi.createRelease).not.toHaveBeenCalled();
+      expect(testApi.createTestRun).not.toHaveBeenCalled();
+    });
+
+    describe('failures while launching an automated run', () => {
+      const automated = {
+        testCaseIds: [5], planId: 1, testType: 'automated' as const, runner: 'releaseStage' as const,
+        buildPipelineId: 8, buildId: 42, releasePipelineId: 3, stageName: 'Stage'
+      };
+
+      it('creates no run when the release service cannot be reached (e.g. a TLS failure)', async () => {
+        releaseApi.getReleaseDefinition.mockRejectedValue(new Error('unable to get local issuer certificate'));
+        await expect(service.startTestRun(automated)).rejects.toThrow('local issuer certificate');
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+      });
+
+      it('creates no run when the build does not exist', async () => {
+        buildApi.getBuild.mockRejectedValue(new Error('build 42 not found'));
+        await expect(service.startTestRun(automated)).rejects.toThrow('build 42 not found');
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+      });
+
+      it('creates no run when the release pipeline has no build artifact', async () => {
+        releaseApi.getReleaseDefinition.mockResolvedValue({ id: 3, environments: [{ id: 12, name: 'Stage' }], artifacts: [] });
+        await expect(service.startTestRun(automated)).rejects.toThrow('No build artifact found');
+        expect(testApi.createTestRun).not.toHaveBeenCalled();
+      });
+
+      it('aborts the run and names its id when the release cannot be created', async () => {
+        releaseApi.createRelease.mockRejectedValue(new Error('403 forbidden'));
+        await expect(service.startTestRun(automated)).rejects.toThrow(
+          'Could not create the release for test run 77: 403 forbidden. Test run 77 was marked Aborted.'
+        );
+        expect(testApi.updateTestRun).toHaveBeenCalledWith(expect.objectContaining({ state: 'Aborted' }), 'Engineering', 77);
+      });
+
+      it('says so when the run could not be aborted either', async () => {
+        releaseApi.createRelease.mockRejectedValue(new Error('403 forbidden'));
+        testApi.updateTestRun.mockRejectedValue(new Error('nope'));
+        await expect(service.startTestRun(automated)).rejects.toThrow('could not be aborted; abort it manually');
+      });
+
+      it('names the release and leaves everything in place when the stage cannot be started', async () => {
+        releaseApi.updateReleaseEnvironment.mockRejectedValue(new Error('approval pending'));
+        await expect(service.startTestRun(automated)).rejects.toThrow(
+          'Release 500 was created for test run 77 but could not start the stage: approval pending. Nothing was undone; test run 77 is still NotStarted.'
+        );
+        expect(testApi.updateTestRun).not.toHaveBeenCalled();
+      });
+
+      it('names the release when linking it to the run fails after the stage started', async () => {
+        testApi.updateTestRun.mockRejectedValue(new Error('conflict'));
+        await expect(service.startTestRun(automated)).rejects.toThrow('Release 500 was created for test run 77 but could not link the release to the test run: conflict');
+      });
+    });
+  });
+
+  describe('result point ids when a test case has several points', () => {
+    it('takes each result\'s own point id instead of the last point of the case', async () => {
+      testPlanApi.getPointsList.mockResolvedValue([
+        { id: 9, testCaseReference: { id: 5 } }, { id: 10, testCaseReference: { id: 5 } }
+      ]);
+      testApi.getTestResults.mockResolvedValue([
+        { id: 100000, testCase: { id: '5' }, testPoint: { id: '9' } },
+        { id: 100001, testCase: { id: '5' }, testPoint: { id: '10' } }
+      ]);
+      const out = await service.startTestRun({ testCaseIds: [5], planId: 1, suiteId: 20, testType: 'manual', runner: 'webApplication' });
+      expect(out.results.map((r) => [r.resultId, r.pointId])).toEqual([[100000, 9], [100001, 10]]);
+    });
+
+    it('infers the point from the test case only when it has exactly one', async () => {
+      testPlanApi.getPointsList.mockResolvedValue([{ id: 9, testCaseReference: { id: 5 } }]);
+      testApi.getTestResults.mockResolvedValue([{ id: 100000, testCase: { id: '5' } }]);
+      const one = await service.startTestRun({ testCaseIds: [5], planId: 1, suiteId: 20, testType: 'manual', runner: 'webApplication' });
+      expect(one.results[0].pointId).toBe(9);
+
+      testPlanApi.getPointsList.mockResolvedValue([
+        { id: 9, testCaseReference: { id: 5 } }, { id: 10, testCaseReference: { id: 5 } }
+      ]);
+      const many = await service.startTestRun({ testCaseIds: [5], planId: 1, suiteId: 20, testType: 'manual', runner: 'webApplication' });
+      expect(many.results[0].pointId).toBeUndefined();
     });
   });
 

@@ -369,6 +369,9 @@ export class TestExecutionService extends AzureDevOpsService {
       const testApi = await this.getTestApi();
       const runName = params.runName || `Run of ${params.testCaseIds.length} test case(s) - ${new Date().toISOString()}`;
       const automated = params.testType === "automated";
+      // Everything that can be checked without side effects is checked before the run exists, so an
+      // unknown stage, a missing build or an unreachable release service leaves nothing behind.
+      const releasePlan = automated ? await this.prepareRelease(params) : undefined;
       const run = await testApi.createTestRun(
         {
           name: runName,
@@ -383,11 +386,14 @@ export class TestExecutionService extends AzureDevOpsService {
 
       let release: { id?: number; name?: string; stage: string } | undefined;
       if (automated) {
-        release = await this.deployStage(run.id!, params);
+        release = await this.startReleaseStage(run.id!, releasePlan!);
       }
 
       const results = automated ? [] : await testApi.getTestResults(this.config.project, run.id!);
-      const pointByCase = new Map(points.map((p) => [p.testCaseId, p.pointId]));
+      const pointsByCase = new Map<number, number[]>();
+      for (const p of points) {
+        pointsByCase.set(p.testCaseId, [...(pointsByCase.get(p.testCaseId) || []), p.pointId]);
+      }
       return {
         runId: run.id,
         runName: run.name,
@@ -398,7 +404,11 @@ export class TestExecutionService extends AzureDevOpsService {
         results: results.map((r) => ({
           resultId: r.id!,
           testCaseId: r.testCase?.id !== undefined ? Number(r.testCase.id) : undefined,
-          pointId: pointByCase.get(Number(r.testCase?.id)),
+          // A test case can have several points (configurations, suites): trust the result's own point,
+          // and only infer from the test case when it has exactly one.
+          pointId: r.testPoint?.id !== undefined
+            ? Number(r.testPoint.id)
+            : pointsByCase.get(Number(r.testCase?.id))?.length === 1 ? pointsByCase.get(Number(r.testCase?.id))![0] : undefined,
           outcome: r.outcome,
           state: r.state,
         })) as StartedTestResult[],
@@ -409,7 +419,11 @@ export class TestExecutionService extends AzureDevOpsService {
     }
   }
 
-  private async deployStage(runId: number, params: StartTestRunParams) {
+  /**
+   * Check everything an automated run needs from the release side - the release pipeline, the
+   * stage, the build artifact and the build - without changing anything.
+   */
+  private async prepareRelease(params: StartTestRunParams) {
     const releaseApi = await this.getReleaseApi();
     const definition = await releaseApi.getReleaseDefinition(this.config.project, params.releasePipelineId!);
     const environments = definition.environments || [];
@@ -431,43 +445,81 @@ export class TestExecutionService extends AzureDevOpsService {
     }
 
     const build = await this.resolveBuild(params.buildPipelineId!, params.buildId, params.buildNumber);
-    const variableName = params.runIdVariableName || "test.RunId";
+    return {
+      releaseApi,
+      definitionId: params.releasePipelineId!,
+      environments,
+      stage: { id: stage.id, name: stage.name! },
+      artifactAlias: artifact.alias,
+      build: { id: build.id!, number: build.buildNumber },
+      variableName: params.runIdVariableName || "test.RunId",
+    };
+  }
 
-    const release = await releaseApi.createRelease(
-      {
-        definitionId: params.releasePipelineId,
-        description: `Test run ${runId}`,
-        artifacts: [{ alias: artifact.alias, instanceReference: { id: String(build.id), name: build.buildNumber } }],
-        // Every stage is manual so creating the release deploys nothing; the chosen one is started below.
-        manualEnvironments: environments.map((e) => e.name!),
-        variables: { [variableName]: { value: String(runId) } },
-      },
-      this.config.project
-    );
-
-    const releaseEnvironment = (release.environments || []).find((e) => e.definitionEnvironmentId === stage.id);
-    if (!releaseEnvironment?.id) {
-      throw new Error(`Release ${release.id} was created but stage '${params.stageName}' was not found on it`);
-    }
-    await releaseApi.updateReleaseEnvironment(
-      { status: EnvironmentStatus.InProgress, comment: `Started by test run ${runId}` },
-      this.config.project,
-      release.id!,
-      releaseEnvironment.id
-    );
-
+  /**
+   * Create the release for an already created test run and start only the chosen stage. A failure
+   * names what exists so it can be recovered: before a release exists the run is marked Aborted
+   * (nothing ran, so that is safe); once a release exists nothing is undone.
+   */
+  private async startReleaseStage(runId: number, plan: Awaited<ReturnType<TestExecutionService["prepareRelease"]>>) {
     const testApi = await this.getTestApi();
-    await testApi.updateTestRun(
-      {
-        releaseUri: `vstfs:///ReleaseManagement/Release/${release.id}`,
-        releaseEnvironmentUri: `vstfs:///ReleaseManagement/Environment/${releaseEnvironment.id}`,
-        build: { id: String(build.id) },
-      },
-      this.config.project,
-      runId
-    );
+    let releaseId: number | undefined;
+    let step = "create the release";
+    try {
+      const release = await plan.releaseApi.createRelease(
+        {
+          definitionId: plan.definitionId,
+          description: `Test run ${runId}`,
+          artifacts: [{ alias: plan.artifactAlias, instanceReference: { id: String(plan.build.id), name: plan.build.number } }],
+          // Every stage is manual so creating the release deploys nothing; the chosen one is started below.
+          manualEnvironments: plan.environments.map((e) => e.name!),
+          variables: { [plan.variableName]: { value: String(runId) } },
+        },
+        this.config.project
+      );
+      releaseId = release.id;
 
-    return { id: release.id, name: release.name, stage: stage.name! };
+      step = "start the stage";
+      const releaseEnvironment = (release.environments || []).find((e) => e.definitionEnvironmentId === plan.stage.id);
+      if (!releaseEnvironment?.id) {
+        throw new Error(`stage '${plan.stage.name}' was not found on the new release`);
+      }
+      await plan.releaseApi.updateReleaseEnvironment(
+        { status: EnvironmentStatus.InProgress, comment: `Started by test run ${runId}` },
+        this.config.project,
+        release.id!,
+        releaseEnvironment.id
+      );
+
+      step = "link the release to the test run";
+      await testApi.updateTestRun(
+        {
+          releaseUri: `vstfs:///ReleaseManagement/Release/${release.id}`,
+          releaseEnvironmentUri: `vstfs:///ReleaseManagement/Environment/${releaseEnvironment.id}`,
+          build: { id: String(plan.build.id) },
+        },
+        this.config.project,
+        runId
+      );
+
+      return { id: release.id, name: release.name, stage: plan.stage.name };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (releaseId === undefined) {
+        let outcome: string;
+        try {
+          await testApi.updateTestRun({ state: "Aborted", comment: `Release could not be created: ${reason}` }, this.config.project, runId);
+          outcome = `Test run ${runId} was marked Aborted.`;
+        } catch {
+          outcome = `Test run ${runId} was created and could not be aborted; abort it manually.`;
+        }
+        throw new Error(`Could not ${step} for test run ${runId}: ${reason}. ${outcome}`);
+      }
+      throw new Error(
+        `Release ${releaseId} was created for test run ${runId} but could not ${step}: ${reason}. ` +
+          `Nothing was undone; test run ${runId} is still NotStarted.`
+      );
+    }
   }
 
   /**
