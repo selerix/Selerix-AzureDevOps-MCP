@@ -36,7 +36,9 @@ import {
   AddWorkItemAttachmentParams,
   WorkItemAttachmentInfo,
   GetWorkItemAttachmentParams,
-  WorkItemAttachmentContent
+  WorkItemAttachmentContent,
+  DeleteWorkItemAttachmentParams,
+  DeletedWorkItemAttachment
 } from '../Interfaces/WorkItems';
 
 // Above this decoded size, base64Content is rejected outright rather than accepted: inlining
@@ -46,6 +48,25 @@ import {
 // deliberately tiny (1 KB) so that essentially anything worth uploading - including small
 // images - is forced through filePath rather than being inlined.
 const MAX_BASE64_ATTACHMENT_BYTES = 1 * 1024; // 1 KB decoded
+
+// How many times removing an attachment is tried when the work item keeps changing underneath it.
+const MAX_ATTACHMENT_REMOVE_ATTEMPTS = 3;
+
+/** The attachment GUID in an attachment URL (lower case), or undefined when the URL has none. */
+function attachmentGuid(url: string | undefined): string | undefined {
+  const match = url ? url.match(/\/attachments\/([^/?]+)/i) : null;
+  return match ? match[1].toLowerCase() : undefined;
+}
+
+/** Whether an update was rejected because the work item changed since it was read (failed revision test). */
+function isRevisionConflict(error: unknown): boolean {
+  const e = error as { statusCode?: number; message?: string };
+  return (
+    e?.statusCode === 409 ||
+    e?.statusCode === 412 ||
+    /TF26071|changed by someone else|test operation|precondition|conflict/i.test(e?.message ?? '')
+  );
+}
 
 export class WorkItemService extends AzureDevOpsService {
   constructor(config: AzureDevOpsConfig) {
@@ -667,6 +688,84 @@ export class WorkItemService extends AzureDevOpsService {
         });
     } catch (error) {
       console.error(`Error listing attachments for work item ${params.id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove an attachment from a work item, given the attachment GUID from listWorkItemAttachments.
+   *
+   * This removes the `AttachedFile` relation. Azure DevOps has no API to delete the uploaded file
+   * itself: once nothing links to it, it is no longer reachable from the work item.
+   *
+   * The relation is found by its position in a fresh read of the work item, and the removal is
+   * guarded by a JSON Patch test of the revision that read saw. If the work item changed in
+   * between, the patch is rejected (so a shifted position can never remove a different relation)
+   * and the lookup is repeated on a new read.
+   */
+  public async deleteWorkItemAttachment(params: DeleteWorkItemAttachmentParams): Promise<DeletedWorkItemAttachment> {
+    try {
+      const attachmentId = (params.attachmentId || '').trim().toLowerCase();
+      if (!attachmentId) {
+        throw new Error('attachmentId is required. Get it from listWorkItemAttachments.');
+      }
+      const witApi = await this.getWorkItemTrackingApi();
+
+      for (let attempt = 1; ; attempt++) {
+        const workItem = await witApi.getWorkItem(
+          params.id,
+          undefined,
+          undefined,
+          WorkItemExpand.Relations,
+          this.config.project
+        );
+        const relations = workItem.relations || [];
+        const index = relations.findIndex(
+          relation => relation.rel === 'AttachedFile' && attachmentGuid(relation.url) === attachmentId
+        );
+        if (index < 0) {
+          throw new Error(
+            `Work item ${params.id} has no attachment with id ${params.attachmentId}. ` +
+            'Use listWorkItemAttachments to see its attachments.'
+          );
+        }
+        const relation = relations[index];
+
+        try {
+          const updated = await witApi.updateWorkItem(
+            undefined,
+            [
+              { op: Operation.Test, path: '/rev', value: workItem.rev },
+              { op: Operation.Remove, path: `/relations/${index}` }
+            ],
+            params.id,
+            this.config.project
+          );
+          return {
+            workItemId: params.id,
+            removed: {
+              id: attachmentGuid(relation.url),
+              url: relation.url,
+              name: relation.attributes?.name,
+              comment: relation.attributes?.comment,
+              resourceSize: relation.attributes?.resourceSize
+            },
+            rev: updated?.rev
+          };
+        } catch (error) {
+          if (!isRevisionConflict(error) || attempt >= MAX_ATTACHMENT_REMOVE_ATTEMPTS) {
+            if (isRevisionConflict(error)) {
+              throw new Error(
+                `Work item ${params.id} kept changing while the attachment was being removed ` +
+                `(${attempt} attempts), so nothing was removed. Try again.`
+              );
+            }
+            throw error;
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error removing attachment ${params.attachmentId} from work item ${params.id}:`, error);
       throw error;
     }
   }

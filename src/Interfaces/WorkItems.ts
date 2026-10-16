@@ -158,6 +158,29 @@ export interface WorkItemAttachmentInfo {
 }
 
 /**
+ * Interface for removing an attachment from a work item.
+ *
+ * - `id`: the work item the attachment is linked to.
+ * - `attachmentId`: the attachment GUID returned by listWorkItemAttachments. A file name is not
+ *   accepted: the same name can be attached more than once, and the wrong copy must not go.
+ */
+export interface DeleteWorkItemAttachmentParams {
+  id: number;
+  attachmentId: string;
+}
+
+/**
+ * Interface for the result of removing an attachment from a work item.
+ */
+export interface DeletedWorkItemAttachment {
+  workItemId: number;
+  /** The attachment link that was removed */
+  removed: WorkItemAttachmentInfo;
+  /** The work item's revision after the removal */
+  rev?: number;
+}
+
+/**
  * Interface for downloading an attachment's actual content, as opposed to just its metadata
  * (listWorkItemAttachments). `id` is the attachment GUID returned by listWorkItemAttachments.
  *

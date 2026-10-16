@@ -18,7 +18,8 @@ import {
   BulkWorkItemParams,
   UploadAttachmentParams,
   AddWorkItemAttachmentParams,
-  GetWorkItemAttachmentParams
+  GetWorkItemAttachmentParams,
+  DeleteWorkItemAttachmentParams
 } from '../Interfaces/WorkItems';
 import getClassMethods from "../utils/getClassMethods";
 
@@ -221,6 +222,21 @@ export class WorkItemTools {
       return formatMcpResponse(attachments, `Found ${attachments.length} attachment(s) on work item ${params.id}`);
     } catch (error) {
       console.error('Error in listWorkItemAttachments tool:', error);
+      return formatErrorResponse(error);
+    }
+  }
+
+  /**
+   * Remove an attachment from a work item (the counterpart of addWorkItemAttachment), using the
+   * attachment id from listWorkItemAttachments.
+   */
+  public async deleteWorkItemAttachment(params: DeleteWorkItemAttachmentParams): Promise<McpResponse> {
+    try {
+      const result = await this.workItemService.deleteWorkItemAttachment(params);
+      const label = result.removed.name || params.attachmentId;
+      return formatMcpResponse(result, `Removed attachment ${label} from work item ${params.id}`);
+    } catch (error) {
+      console.error('Error in deleteWorkItemAttachment tool:', error);
       return formatErrorResponse(error);
     }
   }

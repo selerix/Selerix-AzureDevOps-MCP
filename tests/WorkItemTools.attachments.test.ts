@@ -119,6 +119,29 @@ describe('WorkItemTools attachment methods', () => {
     });
   });
 
+  describe('deleteWorkItemAttachment', () => {
+    it('formats a success response naming the removed file', async () => {
+      const removed = { id: '7e823e1a', url: 'https://x/attachments/7e823e1a', name: 'run.md', comment: 'old', resourceSize: 5312 };
+      serviceInstance.deleteWorkItemAttachment.mockResolvedValue({ workItemId: 20539, removed, rev: 4 });
+
+      const params = { id: 20539, attachmentId: '7e823e1a' };
+      const result = await tools.deleteWorkItemAttachment(params);
+
+      expect(serviceInstance.deleteWorkItemAttachment).toHaveBeenCalledWith(params);
+      expect(result.isError).toBeFalsy();
+      expect(result.rawData).toEqual({ workItemId: 20539, removed, rev: 4 });
+      expect(result.content[0].text).toContain('run.md');
+      expect(result.content[0].text).toContain('20539');
+    });
+
+    it('formats an error response when the service fails', async () => {
+      serviceInstance.deleteWorkItemAttachment.mockRejectedValue(new Error('no such attachment'));
+      const result = await tools.deleteWorkItemAttachment({ id: 1, attachmentId: 'x' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('no such attachment');
+    });
+  });
+
   describe('getWorkItemAttachment', () => {
     it('formats a success response for an inline (base64) result', async () => {
       serviceInstance.getWorkItemAttachment.mockResolvedValue({

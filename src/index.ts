@@ -334,6 +334,22 @@ async function main() {
       }
     );
 
+    allowedTools.has("deleteWorkItemAttachment") && server.tool("deleteWorkItemAttachment",
+      "Remove an attachment from a work item (the undo of addWorkItemAttachment). Use listWorkItemAttachments first to get the attachment's id; a file name is not accepted because the same name can be attached more than once. This removes the link: Azure DevOps cannot delete the uploaded file itself, which just stops being reachable from the work item. Removing a link cannot be undone with this tool, but the file can be attached again.",
+      {
+        id: z.number().describe("Work item ID the attachment is linked to"),
+        attachmentId: z.string().describe("Attachment ID (GUID), as returned by listWorkItemAttachments")
+      },
+      async (params, extra) => {
+        const result = await workItemTools.deleteWorkItemAttachment(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     allowedTools.has("getWorkItemAttachment") && server.tool("getWorkItemAttachment",
       "Download the actual content of an attachment linked to a work item (e.g. to read a screenshot's contents), not just its metadata. Use listWorkItemAttachments first to get the attachment's id and file name.",
       {
