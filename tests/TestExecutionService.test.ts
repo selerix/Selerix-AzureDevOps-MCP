@@ -2435,6 +2435,51 @@ describe('TestExecutionService', () => {
       expect(removed()).toEqual(['/relations/0']);
     });
 
+    describe('when another result of the run still involves the work item', () => {
+      // linkTestRunToWorkItems records the association on the results and adds one run hyperlink; it does
+      // not add TcmResult links, so the hyperlink is the only relation the bug carries for the run
+      const twoResultsListing = (...perResult: number[][]) =>
+        testApi.getTestResults.mockResolvedValue(
+          perResult.map((bugs, i) => ({ id: 100000 + i, associatedBugs: bugs.map((id) => ({ id })) }))
+        );
+
+      it('keeps the shared run hyperlink while a second result still lists the bug', async () => {
+        witApi.getWorkItem.mockResolvedValue({ id: 12, rev: 4, relations: [RUN_LINK] });
+        // after the unlink the first result has no bugs, the second still lists bug 12
+        twoResultsListing([], [12]);
+
+        const out = await service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+
+        expect(witApi.updateWorkItem).not.toHaveBeenCalled();
+        expect(out.relationsRemoved).toEqual({ 12: 0 });
+      });
+
+      it('removes the shared run hyperlink once no result of the run lists the bug', async () => {
+        witApi.getWorkItem.mockResolvedValue({ id: 12, rev: 4, relations: [RUN_LINK] });
+        twoResultsListing([], [99]);
+
+        const out = await service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+
+        expect(removed()).toEqual(['/relations/0']);
+        expect(out.relationsRemoved).toEqual({ 12: 1 });
+      });
+
+      it('decides per work item: keeps the hyperlink of the bug another result lists, removes the other one', async () => {
+        witApi.getWorkItem.mockImplementation(async (id: number) => ({ id, rev: 4, relations: [RUN_LINK] }));
+        twoResultsListing([], [12]);
+
+        const out = await service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [12, 13] });
+
+        expect(out.relationsRemoved).toEqual({ 12: 0, 13: 1 });
+      });
+
+      it('does not look at the other results when the hyperlink is kept anyway', async () => {
+        witApi.getWorkItem.mockResolvedValue({ id: 12, rev: 4, relations: [RESULT_LINK(100000), RUN_LINK] });
+        await service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [12], removeRunHyperlink: false });
+        expect(testApi.getTestResults).not.toHaveBeenCalled();
+      });
+    });
+
     it('writes nothing to a work item that has no such links', async () => {
       witApi.getWorkItem.mockResolvedValue({ id: 12, rev: 4, relations: [TESTED_BY, OTHER_RUN] });
       const out = await service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });

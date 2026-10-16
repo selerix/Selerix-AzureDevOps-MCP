@@ -2162,6 +2162,20 @@ export class TestExecutionService extends AzureDevOpsService {
         });
       }
 
+      // The run hyperlink is shared by every result of the run that involves the work item, and a work item
+      // associated by linkTestRunToWorkItems may have no TcmResult link at all. So when only one result is
+      // unlinked, the hyperlink must stay for any work item another result of the run still lists.
+      const stillAssociated = new Set<string>();
+      if (params.resultId !== undefined && params.removeRunHyperlink !== false) {
+        for (const result of await this.getAllRunResults(params.runId, ResultDetails.WorkItems)) {
+          for (const bug of result.associatedBugs || []) {
+            if (remove.has(String(bug.id))) {
+              stillAssociated.add(String(bug.id));
+            }
+          }
+        }
+      }
+
       // The work items' side: the link to each of this run's results in scope, then the hyperlink to
       // the run once none of its results is left linked.
       const resultLink = new RegExp(`^vstfs:///TestManagement/TcmResult/${params.runId}\\.(\\d+)$`, "i");
@@ -2178,7 +2192,7 @@ export class TestExecutionService extends AzureDevOpsService {
           });
           if (params.removeRunHyperlink !== false && run.webAccessUrl) {
             const stillLinked = relations.some((r, index) => !drop.has(index) && r.rel === "ArtifactLink" && resultLink.test(r.url ?? ""));
-            if (!stillLinked) {
+            if (!stillLinked && !stillAssociated.has(String(workItemId))) {
               relations.forEach((r, index) => {
                 if (r.rel === "Hyperlink" && sameRunLink(r.url, run.webAccessUrl!)) {
                   drop.add(index);
