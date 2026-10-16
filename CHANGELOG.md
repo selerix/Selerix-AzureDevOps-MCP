@@ -7,6 +7,12 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `unlinkTestRunFromWorkItems` - the undo of `linkTestRunToWorkItems` (and of the links `createBugFromTestRun`
+  makes): removes work items from a test result's (or a whole run's) associated bugs and removes their links to
+  those results, and the run hyperlink once none is left, from the work items.
+
 ## [1.7.1] - 2026-10-15
 
 ### Added

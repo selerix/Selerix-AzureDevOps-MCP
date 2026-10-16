@@ -2670,6 +2670,24 @@ async function main() {
       }
     );
 
+    allowedTools.has("unlinkTestRunFromWorkItems") && server.tool("unlinkTestRunFromWorkItems",
+      "Undo linkTestRunToWorkItems for a test run (or one of its results): the work items are removed from the results' associated bugs, and their links to those results (and, once none is left, the hyperlink to the run) are removed from the work items. The work items themselves and their link to the test case are kept",
+      {
+        runId: idSchema.describe("ID of the test run"),
+        resultId: idSchema.optional().describe("Unlink only this result; every result in the run when omitted"),
+        workItemIds: z.array(idSchema).min(1).describe("Work item IDs to unlink"),
+        removeRunHyperlink: z.boolean().optional().describe("Also remove the hyperlink to the run once none of its results is linked to the work item (default true)")
+      },
+      async (params, extra) => {
+        const result = await testExecutionTools.unlinkTestRunFromWorkItems(params);
+        return {
+          content: result.content,
+          rawData: result.rawData,
+          isError: result.isError
+        };
+      }
+    );
+
     allowedTools.has("linkTestRunToWorkItems") && server.tool("linkTestRunToWorkItems",
       "Link a test run (or one of its results) to existing work items. Bugs are recorded as the result's associated bugs; other work item types (User Story, Task, PBI...) get only a hyperlink to the run, which every work item gets",
       {
