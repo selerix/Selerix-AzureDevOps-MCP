@@ -2435,6 +2435,66 @@ describe('TestExecutionService', () => {
       expect(removed()).toEqual(['/relations/0']);
     });
 
+    describe('against a link of the same work item to the same run running at the same time', () => {
+      const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+      beforeEach(() => {
+        witApi.getWorkItem.mockResolvedValue({ id: 12, rev: 4, relations: [RUN_LINK] });
+        witApi.getWorkItems.mockImplementation(async (ids: number[]) =>
+          ids.map((id) => ({ id, fields: { 'System.WorkItemType': 'Bug' } })));
+        testApi.getTestResultById.mockImplementation(async (_project: string, _run: number, id: number) =>
+          id === 100000 ? { id, associatedBugs: [{ id: 12 }] } : { id });
+        testApi.updateTestResults.mockImplementation(async (updates: any[]) => updates);
+      });
+
+      it('makes the link wait until the unlink has finished with the hyperlink', async () => {
+        let openGate!: () => void;
+        const gate = new Promise<void>((resolve) => (openGate = resolve));
+        // the unlink stops here, between deciding the result side and handling the hyperlink
+        testApi.getTestResults.mockImplementation(async () => {
+          await gate;
+          return [{ id: 100000, associatedBugs: [] }, { id: 100001, associatedBugs: [] }];
+        });
+
+        const unlink = service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+        await flush();
+        const link = service.linkTestRunToWorkItems({ runId: 77, resultId: 100001, workItemIds: [12] });
+        await flush();
+
+        // only the unlink has started: the link has not read the run nor touched a result
+        expect(testApi.getTestRunById).toHaveBeenCalledTimes(1);
+        expect(testApi.updateTestResults.mock.calls.map((c: any) => c[0][0].id)).toEqual([100000]);
+
+        openGate();
+        await Promise.all([unlink, link]);
+
+        expect(testApi.getTestRunById).toHaveBeenCalledTimes(2);
+        expect(testApi.updateTestResults.mock.calls.map((c: any) => c[0][0].id)).toEqual([100000, 100001]);
+        // the unlink removed the hyperlink before the link looked at the work item again
+        const hyperlinkRemoval = witApi.updateWorkItem.mock.invocationCallOrder[0];
+        const linkResultUpdate = testApi.updateTestResults.mock.invocationCallOrder[1];
+        expect(hyperlinkRemoval).toBeLessThan(linkResultUpdate);
+      });
+
+      it('does not make links to a different work item or a different run wait', async () => {
+        let openGate!: () => void;
+        const gate = new Promise<void>((resolve) => (openGate = resolve));
+        testApi.getTestResults.mockImplementation(async () => {
+          await gate;
+          return [{ id: 100000, associatedBugs: [] }];
+        });
+
+        const unlink = service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [12] });
+        await flush();
+        await service.linkTestRunToWorkItems({ runId: 77, resultId: 100001, workItemIds: [13] });
+        await service.linkTestRunToWorkItems({ runId: 78, resultId: 100001, workItemIds: [12] });
+
+        expect(testApi.getTestRunById).toHaveBeenCalledTimes(3);
+        openGate();
+        await unlink;
+      });
+    });
+
     describe('when another result of the run still involves the work item', () => {
       // linkTestRunToWorkItems records the association on the results and adds one run hyperlink; it does
       // not add TcmResult links, so the hyperlink is the only relation the bug carries for the run

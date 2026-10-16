@@ -937,6 +937,23 @@ export class TestExecutionService extends AzureDevOpsService {
    */
   protected async withResultLocks<T>(runId: number, resultIds: number[], fn: () => Promise<T>): Promise<T> {
     const keys = [...new Set(resultIds)].sort((a, b) => a - b).map((id) => `${runId}/${id}`);
+    return this.withKeyedLocks(keys, fn);
+  }
+
+  /**
+   * Run `fn` while holding the lock of each given work item for a run, so linking and unlinking the
+   * same work item to the same run's results cannot interleave: each decides about the shared run
+   * hyperlink from what it read of the results, and the revision guard on the work item cannot see a
+   * change that was only made to a result. Taken before any result lock and never while holding one,
+   * so the two kinds of lock cannot deadlock. Serialises calls within this server process only.
+   */
+  protected async withRunWorkItemLocks<T>(runId: number, workItemIds: number[], fn: () => Promise<T>): Promise<T> {
+    const keys = [...new Set(workItemIds)].sort((a, b) => a - b).map((id) => `wi:${runId}/${id}`);
+    return this.withKeyedLocks(keys, fn);
+  }
+
+  /** Hold each of the (already ordered) keys' locks in turn, run `fn`, then release them all. */
+  private async withKeyedLocks<T>(keys: string[], fn: () => Promise<T>): Promise<T> {
     const releases: (() => void)[] = [];
     try {
       for (const key of keys) {
@@ -2043,6 +2060,10 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   public async linkTestRunToWorkItems(params: LinkTestRunToWorkItemsParams) {
+    return this.withRunWorkItemLocks(params.runId, params.workItemIds || [], () => this.linkTestRunToWorkItemsLocked(params));
+  }
+
+  private async linkTestRunToWorkItemsLocked(params: LinkTestRunToWorkItemsParams) {
     try {
       if (!params.workItemIds || params.workItemIds.length === 0) {
         throw new Error("workItemIds must contain at least one work item id");
@@ -2117,6 +2138,10 @@ export class TestExecutionService extends AzureDevOpsService {
    * (Tested By) and everything else on the work item stay.
    */
   public async unlinkTestRunFromWorkItems(params: UnlinkTestRunFromWorkItemsParams) {
+    return this.withRunWorkItemLocks(params.runId, params.workItemIds || [], () => this.unlinkTestRunFromWorkItemsLocked(params));
+  }
+
+  private async unlinkTestRunFromWorkItemsLocked(params: UnlinkTestRunFromWorkItemsParams) {
     try {
       if (!params.workItemIds || params.workItemIds.length === 0) {
         throw new Error("workItemIds must contain at least one work item id");
