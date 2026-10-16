@@ -7,6 +7,13 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `deleteWorkItemAttachment` - the counterpart of `addWorkItemAttachment`: removes an attachment from a work
+  item, given the attachment GUID from `listWorkItemAttachments` (a file name is not accepted, because the
+  same name can be attached twice). It removes the `AttachedFile` link with a revision-guarded patch and
+  retries on a conflict; Azure DevOps cannot delete the uploaded file itself.
+
 ## [1.7.1] - 2026-10-15
 
 ### Added

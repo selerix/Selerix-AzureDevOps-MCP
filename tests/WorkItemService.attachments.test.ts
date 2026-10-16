@@ -368,6 +368,104 @@ describe('WorkItemService attachment methods', () => {
     });
   });
 
+  describe('deleteWorkItemAttachment', () => {
+    const OLD = 'https://dev.azure.com/selerix/6d846e26/_apis/wit/attachments/7E823E1A-70EA-4852-8713-8C70DCEA3487';
+    const NEW = 'https://dev.azure.com/selerix/6d846e26/_apis/wit/attachments/812a1fe3-1098-4c65-83c2-897748fb7339';
+    const OLD_ID = '7e823e1a-70ea-4852-8713-8c70dcea3487';
+    const relations = () => [
+      { rel: 'Microsoft.VSTS.Common.TestedBy-Forward', url: 'https://dev.azure.com/selerix/_apis/wit/workItems/5' },
+      { rel: 'AttachedFile', url: NEW, attributes: { name: 'run.md', comment: 'new', resourceSize: 6048 } },
+      { rel: 'AttachedFile', url: OLD, attributes: { name: 'run.md', comment: 'old', resourceSize: 5312 } },
+      { rel: 'Hyperlink', url: 'https://example.com/' }
+    ];
+
+    it('removes only the relation whose attachment id matches, even when two attachments share a file name', async () => {
+      mockWitApi.getWorkItem.mockResolvedValue({ id: 20539, rev: 3, relations: relations() });
+      mockWitApi.updateWorkItem.mockResolvedValue({ id: 20539, rev: 4 });
+
+      const result = await service.deleteWorkItemAttachment({ id: 20539, attachmentId: OLD_ID });
+
+      expect(mockWitApi.getWorkItem).toHaveBeenCalledWith(20539, undefined, undefined, WorkItemExpand.Relations, 'Engineering');
+      expect(mockWitApi.updateWorkItem).toHaveBeenCalledWith(
+        undefined,
+        [
+          { op: Operation.Test, path: '/rev', value: 3 },
+          { op: Operation.Remove, path: '/relations/2' }
+        ],
+        20539,
+        'Engineering'
+      );
+      expect(result).toEqual({
+        workItemId: 20539,
+        removed: { id: OLD_ID, url: OLD, name: 'run.md', comment: 'old', resourceSize: 5312 },
+        rev: 4
+      });
+    });
+
+    it('matches the id without regard to case or surrounding spaces', async () => {
+      mockWitApi.getWorkItem.mockResolvedValue({ id: 1, rev: 1, relations: relations() });
+      mockWitApi.updateWorkItem.mockResolvedValue({ id: 1, rev: 2 });
+      await service.deleteWorkItemAttachment({ id: 1, attachmentId: '  ' + OLD_ID.toUpperCase() + ' ' });
+      expect(mockWitApi.updateWorkItem.mock.calls[0][1][1]).toEqual({ op: Operation.Remove, path: '/relations/2' });
+    });
+
+    it('does not remove a link that is not an attachment, even if its url mentions the id', async () => {
+      mockWitApi.getWorkItem.mockResolvedValue({ id: 1, rev: 1, relations: [{ rel: 'Hyperlink', url: OLD }] });
+      await expect(service.deleteWorkItemAttachment({ id: 1, attachmentId: OLD_ID })).rejects.toThrow('has no attachment');
+      expect(mockWitApi.updateWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('fails clearly, changing nothing, when the work item has no such attachment', async () => {
+      mockWitApi.getWorkItem.mockResolvedValue({ id: 1, rev: 1, relations: relations() });
+      await expect(service.deleteWorkItemAttachment({ id: 1, attachmentId: 'does-not-exist' }))
+        .rejects.toThrow(/no attachment with id does-not-exist.*listWorkItemAttachments/);
+      expect(mockWitApi.updateWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('fails when the work item has no relations at all', async () => {
+      mockWitApi.getWorkItem.mockResolvedValue({ id: 1, rev: 1 });
+      await expect(service.deleteWorkItemAttachment({ id: 1, attachmentId: OLD_ID })).rejects.toThrow('has no attachment');
+    });
+
+    it('requires an attachment id, and does not accept a blank one', async () => {
+      await expect(service.deleteWorkItemAttachment({ id: 1, attachmentId: '   ' })).rejects.toThrow('attachmentId is required');
+      expect(mockWitApi.getWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('looks the relation up again on a fresh read when the work item changed in between', async () => {
+      // the first read has the old attachment at position 2; by the second read a relation before it is gone
+      mockWitApi.getWorkItem
+        .mockResolvedValueOnce({ id: 1, rev: 3, relations: relations() })
+        .mockResolvedValueOnce({ id: 1, rev: 4, relations: relations().slice(1) });
+      mockWitApi.updateWorkItem
+        .mockRejectedValueOnce(Object.assign(new Error('TF26071: This work item has been changed by someone else'), { statusCode: 409 }))
+        .mockResolvedValueOnce({ id: 1, rev: 5 });
+
+      const result = await service.deleteWorkItemAttachment({ id: 1, attachmentId: OLD_ID });
+
+      expect(mockWitApi.updateWorkItem).toHaveBeenCalledTimes(2);
+      expect(mockWitApi.updateWorkItem.mock.calls[1][1]).toEqual([
+        { op: Operation.Test, path: '/rev', value: 4 },
+        { op: Operation.Remove, path: '/relations/1' }
+      ]);
+      expect(result.rev).toBe(5);
+    });
+
+    it('gives up with a clear message when the work item keeps changing', async () => {
+      mockWitApi.getWorkItem.mockResolvedValue({ id: 1, rev: 3, relations: relations() });
+      mockWitApi.updateWorkItem.mockRejectedValue(Object.assign(new Error('conflict'), { statusCode: 412 }));
+      await expect(service.deleteWorkItemAttachment({ id: 1, attachmentId: OLD_ID })).rejects.toThrow(/kept changing.*nothing was removed/);
+      expect(mockWitApi.updateWorkItem).toHaveBeenCalledTimes(3);
+    });
+
+    it('passes other errors through without retrying', async () => {
+      mockWitApi.getWorkItem.mockResolvedValue({ id: 1, rev: 3, relations: relations() });
+      mockWitApi.updateWorkItem.mockRejectedValue(Object.assign(new Error('forbidden'), { statusCode: 403 }));
+      await expect(service.deleteWorkItemAttachment({ id: 1, attachmentId: OLD_ID })).rejects.toThrow('forbidden');
+      expect(mockWitApi.updateWorkItem).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('getWorkItemAttachment', () => {
     it('fetches content by id/fileName/project and returns it inline as base64 when small', async () => {
       const originalBytes = Buffer.from('small screenshot bytes');

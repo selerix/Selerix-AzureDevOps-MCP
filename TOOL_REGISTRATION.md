@@ -189,6 +189,8 @@ Here's a list of all the tools mentioned in the README.md file:
 - `uploadAttachment`
 - `addWorkItemAttachment`
 - `listWorkItemAttachments`
+- `getWorkItemAttachment`
+- `deleteWorkItemAttachment` (removes the AttachedFile link by attachment GUID; revision-guarded)
 
 ### Boards & Sprints Tools
 - `getBoards`
