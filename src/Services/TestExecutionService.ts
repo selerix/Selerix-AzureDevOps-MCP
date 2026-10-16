@@ -2434,40 +2434,47 @@ export class TestExecutionService extends AzureDevOpsService {
     try {
       const witApi = await this.getWorkItemTrackingApi();
       const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails, params.iterationId);
-      // The Repro Steps text is read, extended and written back, so two updates overlapping on one
-      // bug could overwrite each other's report. The update is therefore guarded by a test of the
-      // revision it was built from and rebuilt from a fresh read when the bug has changed since.
-      await this.updateWorkItemIfUnchanged(params.bugId, `Bug ${params.bugId}`, (bug) => {
-        const patch: { op: Operation; path: string; value: unknown }[] = [
-          { op: Operation.Add, path: "/fields/System.History", value: report.html },
-        ];
-        if (params.appendToReproSteps) {
-          const current = (bug.fields?.["Microsoft.VSTS.TCM.ReproSteps"] as string) || "";
-          patch.push({ op: Operation.Add, path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: `${current}<hr/>${report.html}` });
-        }
-        const existing = bug.relations || [];
-        for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
-          const duplicate = existing.some((r) =>
-            r.rel === relation.rel && (relation.rel === "Hyperlink" ? sameRunLink(r.url, relation.url) : r.url === relation.url));
-          if (!duplicate) {
-            patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
+      // Everything that ties the bug to this result - the relations written here and the association the
+      // link below records on the result - is done while holding the run / work item lock, so an unlink of the
+      // same result cannot run in between, remove the association, and then take both links away while the
+      // association is put back (each call would succeed and the bug would be left without its links).
+      const linkWarnings = await this.withRunWorkItemLocks(params.runId, [params.bugId], async () => {
+        // The Repro Steps text is read, extended and written back, so two updates overlapping on one
+        // bug could overwrite each other's report. The update is therefore guarded by a test of the
+        // revision it was built from and rebuilt from a fresh read when the bug has changed since.
+        await this.updateWorkItemIfUnchanged(params.bugId, `Bug ${params.bugId}`, (bug) => {
+          const patch: { op: Operation; path: string; value: unknown }[] = [
+            { op: Operation.Add, path: "/fields/System.History", value: report.html },
+          ];
+          if (params.appendToReproSteps) {
+            const current = (bug.fields?.["Microsoft.VSTS.TCM.ReproSteps"] as string) || "";
+            patch.push({ op: Operation.Add, path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: `${current}<hr/>${report.html}` });
           }
-        }
-        return patch;
-      });
+          const existing = bug.relations || [];
+          for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
+            const duplicate = existing.some((r) =>
+              r.rel === relation.rel && (relation.rel === "Hyperlink" ? sameRunLink(r.url, relation.url) : r.url === relation.url));
+            if (!duplicate) {
+              patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
+            }
+          }
+          return patch;
+        });
 
-      let linkWarnings: string[] | undefined;
-      try {
-        linkWarnings = (await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false })).warnings;
-      } catch (error) {
-        // The bug has already been updated. Calling this tool again would add the comment twice.
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Bug ${params.bugId} was updated with test result ${params.runId}/${params.resultId} but the result could not be linked to it: ${reason}. ` +
-            `Do not call updateBugWithTestRun again (it would repeat the comment); retry linkTestRunToWorkItems with runId ${params.runId}, ` +
-            `resultId ${params.resultId} and workItemIds [${params.bugId}].`
-        );
-      }
+        let linkWarnings: string[] | undefined;
+        try {
+          linkWarnings = (await this.linkTestRunToWorkItemsLocked({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false })).warnings;
+        } catch (error) {
+          // The bug has already been updated. Calling this tool again would add the comment twice.
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Bug ${params.bugId} was updated with test result ${params.runId}/${params.resultId} but the result could not be linked to it: ${reason}. ` +
+              `Do not call updateBugWithTestRun again (it would repeat the comment); retry linkTestRunToWorkItems with runId ${params.runId}, ` +
+              `resultId ${params.resultId} and workItemIds [${params.bugId}].`
+          );
+        }
+        return linkWarnings;
+      });
       return { bugId: params.bugId, runId: params.runId, resultId: params.resultId, appendedToReproSteps: !!params.appendToReproSteps, warnings: linkWarnings };
     } catch (error) {
       console.error(`Error updating bug ${params.bugId} with test result ${params.runId}/${params.resultId}:`, error);

@@ -1663,6 +1663,8 @@ describe('TestExecutionService', () => {
         resultWithIteration([{ actionPath: '00000003', outcome: 'Failed', errorMessage: 'Save button <missing>' }])
       );
       jest.spyOn(service, 'linkTestRunToWorkItems').mockResolvedValue({ runId: 77, warnings: [WARNING] } as any);
+      // updateBugWithTestRun already holds the run / work item lock, so it calls the locked variant directly
+      jest.spyOn(service as any, 'linkTestRunToWorkItemsLocked').mockResolvedValue({ runId: 77, warnings: [WARNING] });
     });
 
     it('createBugFromTestRun returns them', async () => {
@@ -2604,6 +2606,51 @@ describe('TestExecutionService', () => {
           /Bug 700 was updated with test result 77\/100000 but the result could not be linked to it: resolution-state route unavailable\. Do not call updateBugWithTestRun again/
         );
         expect(witApi.updateWorkItem).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('updating a bug while the same result is being unlinked from it', () => {
+      const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+      it('keeps an unlink out from the relation patch until the result has been associated', async () => {
+        const order: string[] = [];
+        let openGate!: () => void;
+        const gate = new Promise<void>((resolve) => (openGate = resolve));
+
+        witApi.getWorkItem.mockImplementation(async (id: number) =>
+          id === 700
+            ? { id: 700, rev: 4, fields: {}, relations: [] }
+            : { id: 5, url: 'https://wi/5', fields: { 'Microsoft.VSTS.TCM.Steps': STEPS_XML, 'System.Title': 'Save works' } });
+        witApi.getWorkItems.mockImplementation(async (ids: number[]) =>
+          ids.map((id) => ({ id, fields: { 'System.WorkItemType': 'Bug' } })));
+        // the updater stops here, right after deciding its relation patch and before associating the result
+        witApi.updateWorkItem.mockImplementation(async () => {
+          order.push('bug relations written');
+          await gate;
+          return { id: 700 };
+        });
+        testApi.updateTestResults.mockImplementation(async (updates: any[]) => {
+          order.push('result associated');
+          return updates;
+        });
+        testApi.getTestResults.mockImplementation(async () => {
+          order.push('unlink reads results');
+          return [];
+        });
+
+        const update = service.updateBugWithTestRun({ bugId: 700, runId: 77, resultId: 100000 });
+        await flush();
+        const unlink = service.unlinkTestRunFromWorkItems({ runId: 77, resultId: 100000, workItemIds: [700] });
+        await flush();
+
+        // only the updater has done anything: the unlink is waiting for the work item lock
+        expect(order).toEqual(['bug relations written']);
+
+        openGate();
+        await Promise.all([update, unlink]);
+
+        expect(order.indexOf('result associated')).toBeGreaterThan(-1);
+        expect(order.indexOf('result associated')).toBeLessThan(order.indexOf('unlink reads results'));
       });
     });
 
