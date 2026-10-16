@@ -224,6 +224,15 @@ export interface LinkTestRunToWorkItemsParams {
   addRunHyperlink?: boolean;
 }
 
+export interface UnlinkTestRunFromWorkItemsParams {
+  runId: number;
+  /** Unlink a single result; every result in the run when omitted */
+  resultId?: number;
+  workItemIds: number[];
+  /** Also remove the hyperlink to the run once none of the run's results is linked to the work item (default true) */
+  removeRunHyperlink?: boolean;
+}
+
 export interface CreateBugFromTestRunParams extends TestResultRef {
   /**
    * Which iteration (data row) of a parameterised result to use, as listed in getTestResult's

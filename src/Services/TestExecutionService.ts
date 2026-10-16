@@ -29,6 +29,7 @@ import {
   GetTestPointsParams,
   GetTestRunsParams,
   LinkTestRunToWorkItemsParams,
+  UnlinkTestRunFromWorkItemsParams,
 } from "../Interfaces/TestExecution";
 import {
   PointUpdateModel,
@@ -936,6 +937,23 @@ export class TestExecutionService extends AzureDevOpsService {
    */
   protected async withResultLocks<T>(runId: number, resultIds: number[], fn: () => Promise<T>): Promise<T> {
     const keys = [...new Set(resultIds)].sort((a, b) => a - b).map((id) => `${runId}/${id}`);
+    return this.withKeyedLocks(keys, fn);
+  }
+
+  /**
+   * Run `fn` while holding the lock of each given work item for a run, so linking and unlinking the
+   * same work item to the same run's results cannot interleave: each decides about the shared run
+   * hyperlink from what it read of the results, and the revision guard on the work item cannot see a
+   * change that was only made to a result. Taken before any result lock and never while holding one,
+   * so the two kinds of lock cannot deadlock. Serialises calls within this server process only.
+   */
+  protected async withRunWorkItemLocks<T>(runId: number, workItemIds: number[], fn: () => Promise<T>): Promise<T> {
+    const keys = [...new Set(workItemIds)].sort((a, b) => a - b).map((id) => `wi:${runId}/${id}`);
+    return this.withKeyedLocks(keys, fn);
+  }
+
+  /** Hold each of the (already ordered) keys' locks in turn, run `fn`, then release them all. */
+  private async withKeyedLocks<T>(keys: string[], fn: () => Promise<T>): Promise<T> {
     const releases: (() => void)[] = [];
     try {
       for (const key of keys) {
@@ -2042,6 +2060,10 @@ export class TestExecutionService extends AzureDevOpsService {
   }
 
   public async linkTestRunToWorkItems(params: LinkTestRunToWorkItemsParams) {
+    return this.withRunWorkItemLocks(params.runId, params.workItemIds || [], () => this.linkTestRunToWorkItemsLocked(params));
+  }
+
+  private async linkTestRunToWorkItemsLocked(params: LinkTestRunToWorkItemsParams) {
     try {
       if (!params.workItemIds || params.workItemIds.length === 0) {
         throw new Error("workItemIds must contain at least one work item id");
@@ -2107,6 +2129,135 @@ export class TestExecutionService extends AzureDevOpsService {
       console.error(`Error linking test run ${params.runId} to work items:`, error);
       throw error;
     }
+  }
+
+  /**
+   * The undo of linkTestRunToWorkItems (and of the links createBugFromTestRun makes): the work
+   * items are taken out of the results' associated bugs, and their link to those results is
+   * removed. Only the links to this run's results are touched; the link to the test case
+   * (Tested By) and everything else on the work item stay.
+   */
+  public async unlinkTestRunFromWorkItems(params: UnlinkTestRunFromWorkItemsParams) {
+    return this.withRunWorkItemLocks(params.runId, params.workItemIds || [], () => this.unlinkTestRunFromWorkItemsLocked(params));
+  }
+
+  private async unlinkTestRunFromWorkItemsLocked(params: UnlinkTestRunFromWorkItemsParams) {
+    try {
+      if (!params.workItemIds || params.workItemIds.length === 0) {
+        throw new Error("workItemIds must contain at least one work item id");
+      }
+      const testApi = await this.getTestApi();
+      const run = await testApi.getTestRunById(this.config.project, params.runId);
+      const workItemIds = [...new Set(params.workItemIds)];
+      const remove = new Set(workItemIds.map(String));
+
+      const resultIds: number[] =
+        params.resultId !== undefined ? [params.resultId] : (await this.getAllRunResults(params.runId)).map((r) => r.id!);
+
+      // Same read-modify-write under the results' locks as linking. A result that lists none of the
+      // work items is left alone, so nothing is written for it.
+      const warnings = new Set<string>();
+      const unlinkedResults: number[] = [];
+      for (let i = 0; i < resultIds.length; i += RESULT_UPDATE_BATCH_SIZE) {
+        const batch = resultIds.slice(i, i + RESULT_UPDATE_BATCH_SIZE);
+        await this.withResultLocks(params.runId, batch, async () => {
+          const existingResults = await mapWithConcurrency(batch, RUN_LOOKUP_CONCURRENCY, (id) =>
+            testApi.getTestResultById(this.config.project, params.runId, id, ResultDetails.WorkItems)
+          );
+          const updates: TestCaseResult[] = [];
+          for (let j = 0; j < batch.length; j++) {
+            const current = (existingResults[j].associatedBugs || []).map((b) => String(b.id));
+            if (!current.some((id) => remove.has(id))) {
+              continue;
+            }
+            const found: string[] = [];
+            updates.push(
+              await this.buildResultUpdate(
+                existingResults[j],
+                { id: batch[j], associatedBugs: current.filter((id) => !remove.has(id)).map((id) => ({ id })) },
+                found
+              )
+            );
+            found.forEach((w) => warnings.add(w));
+            unlinkedResults.push(batch[j]);
+          }
+          if (updates.length > 0) {
+            await testApi.updateTestResults(updates, this.config.project, params.runId);
+          }
+        });
+      }
+
+      // The run hyperlink is shared by every result of the run that involves the work item, and a work item
+      // associated by linkTestRunToWorkItems may have no TcmResult link at all. So when only one result is
+      // unlinked, the hyperlink must stay for any work item another result of the run still lists.
+      const stillAssociated = new Set<string>();
+      if (params.resultId !== undefined && params.removeRunHyperlink !== false) {
+        for (const result of await this.getAllRunResults(params.runId, ResultDetails.WorkItems)) {
+          for (const bug of result.associatedBugs || []) {
+            if (remove.has(String(bug.id))) {
+              stillAssociated.add(String(bug.id));
+            }
+          }
+        }
+      }
+
+      // The work items' side: the link to each of this run's results in scope, then the hyperlink to
+      // the run once none of its results is left linked.
+      const resultLink = new RegExp(`^vstfs:///TestManagement/TcmResult/${params.runId}\\.(\\d+)$`, "i");
+      const inScope = new Set(resultIds);
+      const relationsRemoved: Record<number, number> = {};
+      for (const workItemId of workItemIds) {
+        relationsRemoved[workItemId] = await this.removeRelations(workItemId, (relations) => {
+          const drop = new Set<number>();
+          relations.forEach((r, index) => {
+            const match = r.rel === "ArtifactLink" ? resultLink.exec(r.url ?? "") : null;
+            if (match && inScope.has(Number(match[1]))) {
+              drop.add(index);
+            }
+          });
+          if (params.removeRunHyperlink !== false && run.webAccessUrl) {
+            const stillLinked = relations.some((r, index) => !drop.has(index) && r.rel === "ArtifactLink" && resultLink.test(r.url ?? ""));
+            if (!stillLinked && !stillAssociated.has(String(workItemId))) {
+              relations.forEach((r, index) => {
+                if (r.rel === "Hyperlink" && sameRunLink(r.url, run.webAccessUrl!)) {
+                  drop.add(index);
+                }
+              });
+            }
+          }
+          return drop;
+        });
+      }
+
+      return {
+        runId: params.runId,
+        resultsUnlinked: unlinkedResults,
+        workItemIds,
+        relationsRemoved,
+        warnings: warnings.size ? [...warnings] : undefined,
+      };
+    } catch (error) {
+      console.error(`Error unlinking test run ${params.runId} from work items:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove the relations `pick` chooses (by index into the work item's relations) from a fresh read
+   * of it, guarded by the revision like any other update. Returns how many were removed.
+   */
+  private async removeRelations(
+    workItemId: number,
+    pick: (relations: { rel?: string; url?: string }[]) => Set<number>
+  ): Promise<number> {
+    let removed = 0;
+    await this.updateWorkItemIfUnchanged(workItemId, `Work item ${workItemId}`, (workItem) => {
+      const drop = pick(workItem.relations || []);
+      removed = drop.size;
+      // highest index first, so removing one does not shift the next
+      return [...drop].sort((a, b) => b - a).map((index) => ({ op: Operation.Remove, path: `/relations/${index}`, value: undefined }));
+    });
+    return removed;
   }
 
   /**
@@ -2283,40 +2434,47 @@ export class TestExecutionService extends AzureDevOpsService {
     try {
       const witApi = await this.getWorkItemTrackingApi();
       const report = await this.buildFailureReport(params.runId, params.resultId, params.additionalDetails, params.iterationId);
-      // The Repro Steps text is read, extended and written back, so two updates overlapping on one
-      // bug could overwrite each other's report. The update is therefore guarded by a test of the
-      // revision it was built from and rebuilt from a fresh read when the bug has changed since.
-      await this.updateWorkItemIfUnchanged(params.bugId, `Bug ${params.bugId}`, (bug) => {
-        const patch: { op: Operation; path: string; value: unknown }[] = [
-          { op: Operation.Add, path: "/fields/System.History", value: report.html },
-        ];
-        if (params.appendToReproSteps) {
-          const current = (bug.fields?.["Microsoft.VSTS.TCM.ReproSteps"] as string) || "";
-          patch.push({ op: Operation.Add, path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: `${current}<hr/>${report.html}` });
-        }
-        const existing = bug.relations || [];
-        for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
-          const duplicate = existing.some((r) =>
-            r.rel === relation.rel && (relation.rel === "Hyperlink" ? sameRunLink(r.url, relation.url) : r.url === relation.url));
-          if (!duplicate) {
-            patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
+      // Everything that ties the bug to this result - the relations written here and the association the
+      // link below records on the result - is done while holding the run / work item lock, so an unlink of the
+      // same result cannot run in between, remove the association, and then take both links away while the
+      // association is put back (each call would succeed and the bug would be left without its links).
+      const linkWarnings = await this.withRunWorkItemLocks(params.runId, [params.bugId], async () => {
+        // The Repro Steps text is read, extended and written back, so two updates overlapping on one
+        // bug could overwrite each other's report. The update is therefore guarded by a test of the
+        // revision it was built from and rebuilt from a fresh read when the bug has changed since.
+        await this.updateWorkItemIfUnchanged(params.bugId, `Bug ${params.bugId}`, (bug) => {
+          const patch: { op: Operation; path: string; value: unknown }[] = [
+            { op: Operation.Add, path: "/fields/System.History", value: report.html },
+          ];
+          if (params.appendToReproSteps) {
+            const current = (bug.fields?.["Microsoft.VSTS.TCM.ReproSteps"] as string) || "";
+            patch.push({ op: Operation.Add, path: "/fields/Microsoft.VSTS.TCM.ReproSteps", value: `${current}<hr/>${report.html}` });
           }
-        }
-        return patch;
-      });
+          const existing = bug.relations || [];
+          for (const relation of this.resultRelations(report, params.runId, params.resultId)) {
+            const duplicate = existing.some((r) =>
+              r.rel === relation.rel && (relation.rel === "Hyperlink" ? sameRunLink(r.url, relation.url) : r.url === relation.url));
+            if (!duplicate) {
+              patch.push({ op: Operation.Add, path: "/relations/-", value: relation });
+            }
+          }
+          return patch;
+        });
 
-      let linkWarnings: string[] | undefined;
-      try {
-        linkWarnings = (await this.linkTestRunToWorkItems({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false })).warnings;
-      } catch (error) {
-        // The bug has already been updated. Calling this tool again would add the comment twice.
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `Bug ${params.bugId} was updated with test result ${params.runId}/${params.resultId} but the result could not be linked to it: ${reason}. ` +
-            `Do not call updateBugWithTestRun again (it would repeat the comment); retry linkTestRunToWorkItems with runId ${params.runId}, ` +
-            `resultId ${params.resultId} and workItemIds [${params.bugId}].`
-        );
-      }
+        let linkWarnings: string[] | undefined;
+        try {
+          linkWarnings = (await this.linkTestRunToWorkItemsLocked({ runId: params.runId, resultId: params.resultId, workItemIds: [params.bugId], addRunHyperlink: false })).warnings;
+        } catch (error) {
+          // The bug has already been updated. Calling this tool again would add the comment twice.
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Bug ${params.bugId} was updated with test result ${params.runId}/${params.resultId} but the result could not be linked to it: ${reason}. ` +
+              `Do not call updateBugWithTestRun again (it would repeat the comment); retry linkTestRunToWorkItems with runId ${params.runId}, ` +
+              `resultId ${params.resultId} and workItemIds [${params.bugId}].`
+          );
+        }
+        return linkWarnings;
+      });
       return { bugId: params.bugId, runId: params.runId, resultId: params.resultId, appendedToReproSteps: !!params.appendToReproSteps, warnings: linkWarnings };
     } catch (error) {
       console.error(`Error updating bug ${params.bugId} with test result ${params.runId}/${params.resultId}:`, error);

@@ -7,6 +7,23 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-10-15
+
+Version 1.7.2 was not released; 1.7.3 follows 1.7.1.
+
+### Added
+
+- `unlinkTestRunFromWorkItems` - the undo of `linkTestRunToWorkItems` (and of the links `createBugFromTestRun`
+  makes): removes work items from a test result's (or a whole run's) associated bugs and removes their links to
+  those results, and the run hyperlink once none is left, from the work items (when one result is unlinked, the
+  hyperlink stays while another result of the run still lists the work item). The work items themselves and
+  their link to the test case are kept. Linking and unlinking the same work item to the same run are run one
+  after another within the server process.
+- `deleteWorkItemAttachment` - the counterpart of `addWorkItemAttachment`: removes an attachment from a work
+  item, given the attachment GUID from `listWorkItemAttachments` (a file name is not accepted, because the
+  same name can be attached twice). It removes the `AttachedFile` link with a revision-guarded patch and
+  retries on a conflict; Azure DevOps cannot delete the uploaded file itself.
+
 ## [1.7.1] - 2026-10-15
 
 ### Added
